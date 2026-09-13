@@ -8,7 +8,10 @@
 # none of the decoding or encoding machinery the desktop projector links
 # against — which is why it can be CGO_ENABLED=0 and land on distroless.
 
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS build
+# 1.27, not 1.25: the projector module's LiveKit dependencies require go >=
+# 1.26, and GOTOOLCHAIN in the image is `local`, so an older base fails at
+# `go mod download` rather than quietly fetching a toolchain.
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS build
 ARG TARGETARCH
 WORKDIR /src
 
