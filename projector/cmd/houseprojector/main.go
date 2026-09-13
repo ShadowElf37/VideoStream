@@ -240,3 +240,15 @@ func (t *transport) SendData(v any, topic string, reliable bool, to []string) er
 func (t *transport) Participant(identity string) *lksdk.RemoteParticipant {
 	return t.pub.Room().GetParticipantByIdentity(identity)
 }
+
+// Roster reports each known participant and the role its metadata carries,
+// which separates "we have never heard of them" from "we know them but their
+// metadata has not arrived".
+func (t *transport) Roster() []string {
+	var out []string
+	for _, rp := range t.pub.Room().GetRemoteParticipants() {
+		out = append(out, fmt.Sprintf("%s(role=%q,meta=%dB)",
+			rp.Identity(), publish.RoleOf(rp), len(rp.Metadata())))
+	}
+	return out
+}

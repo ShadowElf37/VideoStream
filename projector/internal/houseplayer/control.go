@@ -37,6 +37,9 @@ type Transport interface {
 	// fallback for working out a sender's role when the packet did not carry
 	// the participant itself.
 	Participant(identity string) *lksdk.RemoteParticipant
+	// Roster describes who the room is known to contain, for diagnosing why a
+	// sender could not be identified.
+	Roster() []string
 }
 
 // Controller wires a Player to the room's data channel.
@@ -153,7 +156,10 @@ func (c *Controller) handle(cmd proto.MpvCommand, params lksdk.DataReceiveParams
 	if role != proto.RoleHost {
 		if !(c.anyoneCanPause.Load() && IsPauseCommand(cmd.Cmd)) {
 			c.log.Warn("house: rejecting mpv.cmd from non-host",
-				"identity", identity, "role", role, "cmd", cmd.Cmd)
+				"identity", identity, "role", role, "cmd", cmd.Cmd,
+				"senderAttached", params.Sender != nil,
+				"roster", c.tx.Roster(),
+				"waitedMs", time.Since(arrived).Milliseconds())
 			// Answer the refusal. Dropping it leaves the client waiting for a
 			// reply that never comes, which looks like a hang rather than a
 			// permission problem.
