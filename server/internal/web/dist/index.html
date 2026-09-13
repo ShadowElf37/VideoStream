@@ -1,10 +1,28 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>VideoStream</title>
-</head>
-<body>
-  <p>VideoStream: web build not present; run make web</p>
-</body>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0b0b0d" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <title>VideoStream</title>
+    <script>
+      // Apply the persisted theme before first paint to avoid a flash.
+      try {
+        var raw = localStorage.getItem('vs.prefs');
+        var state = raw ? JSON.parse(raw).state : null;
+        var theme = state && state.theme;
+        if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    </script>
+    <script type="module" crossorigin src="/assets/index-CVug6adO.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/react-BBtuiPFs.js">
+    <link rel="modulepreload" crossorigin href="/assets/livekit-BPwqgz42.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CkCzmvlU.css">
+  <link rel="manifest" href="/manifest.webmanifest"></head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

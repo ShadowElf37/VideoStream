@@ -3,8 +3,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMpv, useMpvStore } from '@/host/useMpv';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { formatBytes } from '@/lib/format';
-import type { FsEntry, FsList } from '@/proto/messages';
+import { formatBytes, formatTime } from '@/lib/format';
+import type { FsEntry, FsList, MediaMeta } from '@/proto/messages';
 import { useSession } from '@/state/session';
 import { Button } from '@/ui/Button';
 import { Input } from '@/ui/Field';
@@ -14,6 +14,14 @@ import { Tooltip } from '@/ui/Tooltip';
 // pushed files are listed by the projector and then hidden by this filter.
 const MEDIA_RE = /\.(vsm|mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|flv|mpg|mpeg|ogv|mp3|flac|m4a|ogg|opus|wav|aac)$/i;
 
+/**
+ * The library, and the projector's filesystem behind it.
+ *
+ * Hosted media is the primary list: titles pushed to the server, which anyone
+ * can see and the host can play, queue or delete. The filesystem browser below
+ * it only appears when a desktop projector is connected, since that is the
+ * only thing it can drive.
+ */
 export function QueueTab({ active }: { active: boolean }) {
   const role = useSession((s) => s.role);
   const mpv = useMpv();
@@ -27,6 +35,51 @@ export function QueueTab({ active }: { active: boolean }) {
   const [url, setUrl] = useState('');
   const [house, setHouse] = useState<{ active: boolean; available: boolean; elsewhere: boolean } | null>(null);
   const [houseBusy, setHouseBusy] = useState(false);
+  const [library, setLibrary] = useState<Array<MediaMeta & { url: string }>>([]);
+  const [freeBytes, setFreeBytes] = useState(0);
+
+  const refreshLibrary = async () => {
+    const session = useSession.getState().token?.session;
+    if (!session) return;
+    try {
+      const r = await api.listMedia(session);
+      setLibrary(r.items);
+      setFreeBytes(r.freeBytes);
+    } catch {
+      // A deployment without a library is a normal state, not an error to
+      // shout about; the section simply does not appear.
+      setLibrary([]);
+    }
+  };
+
+  useEffect(() => {
+    if (active) void refreshLibrary();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
+  const playHosted = async (m: MediaMeta, mode: 'replace' | 'append') => {
+    const session = useSession.getState().token?.session;
+    if (!session || !roomId) return;
+    try {
+      await api.playback(roomId, session, { action: mode === 'append' ? 'enqueue' : 'load', mediaId: m.id });
+      useSession.getState().toast(mode === 'append' ? `Queued ${m.title}` : `Playing ${m.title}`, 'info', 2500);
+    } catch (e) {
+      useSession.getState().toast(e instanceof Error ? e.message : String(e), 'error');
+    }
+  };
+
+  const deleteHosted = async (m: MediaMeta) => {
+    if (!window.confirm(`Delete ${m.title} from the server? This cannot be undone.`)) return;
+    const session = useSession.getState().token?.session;
+    if (!session) return;
+    try {
+      await api.deleteMedia(session, m.id);
+      useSession.getState().toast(`Deleted ${m.title}`, 'info', 2500);
+      void refreshLibrary();
+    } catch (e) {
+      useSession.getState().toast(e instanceof Error ? e.message : String(e), 'error');
+    }
+  };
 
   const isHost = role === 'host';
   const roomId = useSession((s) => s.roomId);
@@ -167,6 +220,53 @@ export function QueueTab({ active }: { active: boolean }) {
           <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter this folder" className="pl-8 h-9" aria-label="Filter files" />
         </div>
       </div>
+
+      {library.length > 0 && (
+        <div className="border-b border-hairline">
+          <div className="flex items-center gap-2 px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted">
+            <Server className="size-3.5 shrink-0" />
+            <span className="flex-1">On the server</span>
+            <span className="font-mono normal-case tracking-normal">{formatBytes(freeBytes)} free</span>
+          </div>
+          <div className="pb-1">
+            {library.map((m) => (
+              <div key={m.id} className="group flex items-center gap-2 px-2 h-9 rounded-lg hover:bg-hover">
+                <button
+                  onClick={() => void playHosted(m, 'replace')}
+                  disabled={!isHost}
+                  className="flex-1 min-w-0 flex items-center gap-2 text-left disabled:cursor-default"
+                  title={m.title}
+                >
+                  <Clapperboard className="size-4 shrink-0 text-info" />
+                  <span className="text-[13px] truncate">{m.title}</span>
+                  <span className="ml-auto text-[11px] text-muted font-mono shrink-0">
+                    {formatTime(m.durationMs / 1000)}
+                  </span>
+                </button>
+                {isHost && (
+                  <span className="inline-flex gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100">
+                    <Tooltip label="Play now">
+                      <button onClick={() => void playHosted(m, 'replace')} aria-label="Play now" className="size-7 rounded-md inline-flex items-center justify-center text-muted hover:text-text hover:bg-active">
+                        <Play className="size-3.5" />
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Append to playlist">
+                      <button onClick={() => void playHosted(m, 'append')} aria-label="Append to playlist" className="size-7 rounded-md inline-flex items-center justify-center text-muted hover:text-text hover:bg-active">
+                        <ListPlus className="size-3.5" />
+                      </button>
+                    </Tooltip>
+                    <Tooltip label="Delete from the server">
+                      <button onClick={() => void deleteHosted(m)} aria-label="Delete from the server" className="size-7 rounded-md inline-flex items-center justify-center text-muted hover:text-danger hover:bg-active">
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </Tooltip>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-0.5 px-2 py-1.5 text-[12px] text-muted overflow-x-auto whitespace-nowrap border-b border-hairline">
         <button className={cn('px-1.5 h-6 rounded-md hover:bg-hover hover:text-text', !dir && 'text-text')} onClick={() => void browse('')}>

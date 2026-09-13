@@ -311,3 +311,54 @@ func TestRoomsAreIndependent(t *testing.T) {
 		t.Errorf("room b is playing %q", st.MediaID)
 	}
 }
+
+// Pressing play on a finished film restarts it. Resuming at the end would be
+// noticed by the run loop as "past the duration" and paused straight back, so
+// play would appear to do nothing.
+func TestPlayAtEndRestarts(t *testing.T) {
+	d, _ := newDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, testRoom, "film"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Seek(ctx, testRoom, 7_200_000, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetPaused(ctx, testRoom, true); err != nil {
+		t.Fatal(err)
+	}
+	if st := d.Snapshot(testRoom); st.PosMS != st.DurationMS {
+		t.Fatalf("setup: expected to be parked at the end, got %d", st.PosMS)
+	}
+
+	if err := d.SetPaused(ctx, testRoom, false); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Snapshot(testRoom)
+	if st.Paused {
+		t.Error("still paused after pressing play")
+	}
+	if st.PosMS > 1000 {
+		t.Errorf("resumed at %d ms; a finished film should restart", st.PosMS)
+	}
+}
+
+func TestTogglePlayAtEndRestarts(t *testing.T) {
+	d, _ := newDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, testRoom, "film"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Seek(ctx, testRoom, 7_200_000, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.TogglePause(ctx, testRoom); err != nil { // -> paused at end
+		t.Fatal(err)
+	}
+	if _, err := d.TogglePause(ctx, testRoom); err != nil { // -> play
+		t.Fatal(err)
+	}
+	if st := d.Snapshot(testRoom); st.PosMS > 1000 {
+		t.Errorf("toggling play at the end resumed at %d ms, want a restart", st.PosMS)
+	}
+}

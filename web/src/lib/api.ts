@@ -3,6 +3,8 @@ import type {
   ChatMessage,
   CreateRoomRequest,
   CreateRoomResponse,
+  MediaMeta,
+  PlaybackState,
   RoomInfo,
   RoomSettings,
   TokenRequest,
@@ -71,6 +73,31 @@ export const api = {
       body: JSON.stringify({ text }),
       session,
     }),
+
+  // The pushed library and the transport. Playback commands are plain HTTP:
+  // the session already carries the role, so there is no participant to
+  // identify and no data-channel race to lose.
+  listMedia: (session: string) =>
+    request<{ items: Array<MediaMeta & { url: string }>; freeBytes: number }>('/api/media', { session }),
+
+  deleteMedia: (session: string, id: string) =>
+    request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', session }),
+
+  getPlayback: (id: string, session: string) =>
+    request<PlaybackState>(`/api/rooms/${encodeURIComponent(id)}/playback`, { session }),
+
+  playback: (
+    id: string,
+    session: string,
+    body: { action: string; mediaId?: string; posMs?: number; relative?: boolean },
+  ) =>
+    request<PlaybackState>(`/api/rooms/${encodeURIComponent(id)}/playback`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      session,
+    }),
+
+  serverTime: () => request<{ nowMs: number }>('/api/time'),
 
   // The house projector: a projector running on the server itself, playing
   // files pushed with vspush. Present only when the deployment configures one.

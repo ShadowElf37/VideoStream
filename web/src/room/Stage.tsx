@@ -9,6 +9,9 @@ import { MovieVideo } from './MovieVideo';
 import { BufferingGlyph, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerBar } from './ViewerBar';
+import { HostedMovie } from '@/movie/HostedMovie';
+import { usePlayback } from '@/movie/usePlayback';
+import { useTransport } from '@/movie/useTransport';
 import { useAutoHide } from './hooks';
 import { useMovieTracks, useQualityPreference, useSmoothness } from './useMovieTracks';
 
@@ -31,10 +34,25 @@ export function Stage({
   useSmoothness(room, movie);
   useQualityPreference(movie);
 
+  // Two ways a film can reach this room, and they are mutually exclusive.
+  //
+  // Hosted is the primary one: a file on the server, fetched over HTTPS, with
+  // the browser owning a real buffer and the director owning playback time.
+  // Live is the desktop projector publishing RTP, where the client cannot
+  // seek or buffer ahead and the picture necessarily trails the projector.
+  //
+  // Hosted wins when something is loaded, because a room cannot be watching
+  // two films at once and the server's answer is the authoritative one.
+  const roomId = useSession((s) => s.roomId);
+  const connected = useSession((s) => s.phase) === 'connected';
+  const playback = usePlayback(room, roomId, connected);
+  const hosted = !!playback.state && !playback.state.idle && !!playback.state.url;
+  const transport = useTransport(hosted);
+
   const [stalled, setStalled] = useState(false);
   const onStalled = useCallback((v: boolean) => setStalled(v), []);
   const stageRef = useRef<HTMLDivElement>(null);
-  const hasMovie = !!movie.video;
+  const hasMovie = hosted || !!movie.video;
   // Nothing to obscure without a picture, so keep the bar (and its "Open…") up.
   // Scoped to the stage: the bar belongs to the player, not the page.
   const bar = useAutoHide(1600, hasMovie, stageRef);
@@ -45,6 +63,33 @@ export function Stage({
     if (!isHost || e.metaKey || e.ctrlKey || e.altKey) return;
     const send = (cmd: unknown[]) => void mpv.send(cmd);
     const speed = state?.speed ?? 1;
+    // In hosted mode the transport keys go to the director; the rest (track
+    // switching, subtitle delay) are mpv-only and simply do nothing, which is
+    // honest — a burned-in subtitle has no delay to adjust.
+    if (hosted) {
+      switch (e.key) {
+        case ' ':
+          e.preventDefault();
+          void transport.togglePause();
+          return;
+        case 'ArrowLeft':
+          e.preventDefault();
+          void transport.seek(-5000, true);
+          return;
+        case 'ArrowRight':
+          e.preventDefault();
+          void transport.seek(5000, true);
+          return;
+        case 'ArrowUp':
+          e.preventDefault();
+          void transport.seek(60_000, true);
+          return;
+        case 'ArrowDown':
+          e.preventDefault();
+          void transport.seek(-60_000, true);
+          return;
+      }
+    }
     switch (e.key) {
       case ' ':
         send(['cycle', 'pause']);
@@ -86,7 +131,11 @@ export function Stage({
     e.stopPropagation();
   };
 
-  const paused = !!state && !state.idle && state.pause;
+  // Whichever player is live decides what "paused" means. In hosted mode the
+  // director's word is final; in live mode it is mpv's.
+  const paused = hosted
+    ? !!playback.state?.paused
+    : !!state && !state.idle && state.pause;
 
   return (
     <div
@@ -104,7 +153,16 @@ export function Stage({
         stageRef.current?.focus({ preventScroll: true });
       }}
     >
-      <MovieVideo track={movie.video} paused={paused} onStalled={onStalled} videoRef={videoRef} />
+      {hosted && playback.state && playback.offsetMs !== null ? (
+        <HostedMovie
+          state={playback.state}
+          offsetMs={playback.offsetMs}
+          videoRef={videoRef}
+          onStatus={(st) => setStalled(st.buffering)}
+        />
+      ) : (
+        <MovieVideo track={movie.video} paused={paused} onStalled={onStalled} videoRef={videoRef} />
+      )}
 
       {!hasMovie && <WaitingState projectorOnline={projectorOnline} />}
       {hasMovie && paused && !stalled && <PausedGlyph />}

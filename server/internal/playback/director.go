@@ -115,6 +115,13 @@ func (d *Director) posMS(r *room) int64 {
 	return clamp(r.anchorPosMS+int64(elapsed), r.durationMS)
 }
 
+// atEnd reports whether a position is close enough to the end that resuming
+// there would immediately end again. The tolerance covers a film whose last
+// frame lands a little short of the container's stated duration.
+func atEnd(r *room, posMS int64) bool {
+	return r.durationMS > 0 && posMS >= r.durationMS-250
+}
+
 func clamp(v, max int64) int64 {
 	if v < 0 {
 		return 0
@@ -237,6 +244,13 @@ func (d *Director) SetPaused(ctx context.Context, roomID string, paused bool) er
 	}
 	if r.paused != paused {
 		pos := d.posMS(r)
+		// Resuming a film that has already finished restarts it, rather than
+		// resuming at the end — where the run loop would notice it is past the
+		// duration and pause it straight back, so play would appear to do
+		// nothing at all.
+		if !paused && atEnd(r, pos) {
+			pos = 0
+		}
 		r.paused = paused
 		d.reanchor(r, pos)
 	}
@@ -256,6 +270,9 @@ func (d *Director) TogglePause(ctx context.Context, roomID string) (bool, error)
 	pos := d.posMS(r)
 	r.paused = !r.paused
 	paused := r.paused
+	if !paused && atEnd(r, pos) {
+		pos = 0
+	}
 	d.reanchor(r, pos)
 	d.mu.Unlock()
 	d.Publish(ctx, roomID)
