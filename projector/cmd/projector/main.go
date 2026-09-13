@@ -344,7 +344,6 @@ func (p *projector) rebuildEncoder(ctx context.Context) error {
 				p.log.Warn("video write failed", "err", err)
 			}
 		},
-		IdleAfter: time.Second,
 	})
 	if err != nil {
 		return err

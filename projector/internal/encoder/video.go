@@ -33,9 +33,6 @@ type VideoConfig struct {
 	Stamp func(time.Time) uint32
 	// Sink receives access units in encode order. Data is owned by the caller.
 	Sink func(AccessUnit)
-	// IdleAfter is how long without a fresh rendered frame before we fall back
-	// to re-sending the last picture once a second (pause/seek/idle).
-	IdleAfter time.Duration
 }
 
 // VideoStats is a snapshot for the status line.
@@ -73,7 +70,6 @@ type Video struct {
 	hasPending  bool
 	spare       []byte
 	cur         []byte
-	lastArrival time.Time
 
 	fed     atomic.Int64
 	dup     atomic.Int64
@@ -127,9 +123,6 @@ func (cfg VideoConfig) Args() []string {
 func NewVideo(ctx context.Context, log *slog.Logger, cfg VideoConfig) (*Video, error) {
 	if cfg.FPSNum <= 0 || cfg.FPSDen <= 0 {
 		cfg.FPSNum, cfg.FPSDen = 24000, 1001
-	}
-	if cfg.IdleAfter <= 0 {
-		cfg.IdleAfter = time.Second
 	}
 	v := &Video{
 		log:        log,
@@ -189,13 +182,14 @@ func (v *Video) Submit(buf []byte, wall time.Time) {
 	v.pending, v.spare = v.spare, v.pending
 	v.hasPending = true
 	v.pendingWall = wall
-	v.lastArrival = time.Now()
 	v.mu.Unlock()
 }
 
 // paceLoop feeds ffmpeg exactly one frame per output tick (CFR), duplicating
-// the last picture when mpv produced nothing. While idle it drops to 1 fps so a
-// paused stream costs almost nothing but still keeps the encoder running.
+// the last picture when mpv produced nothing (pause, seek, idle). We keep the
+// full frame rate even when frozen: ffmpeg derives -force_key_frames from input
+// time, so only a full-rate feed holds the 2 s IDR cadence, and a static
+// picture costs the encoder almost nothing.
 func (v *Video) paceLoop(ctx context.Context) {
 	start := time.Now()
 	period := func(n int64) time.Duration {
@@ -205,7 +199,6 @@ func (v *Video) paceLoop(ctx context.Context) {
 	defer timer.Stop()
 
 	var n int64
-	var lastFed time.Time
 	for {
 		n++
 		if d := time.Until(start.Add(period(n))); d > 0 {
@@ -235,16 +228,12 @@ func (v *Video) paceLoop(ctx context.Context) {
 		}
 		frame := v.cur
 		wall := v.pendingWall
-		idle := !v.lastArrival.IsZero() && now.Sub(v.lastArrival) > v.cfg.IdleAfter
 		v.mu.Unlock()
 
 		if frame == nil {
 			continue // nothing rendered yet
 		}
 		if !fresh {
-			if idle && now.Sub(lastFed) < time.Second {
-				continue
-			}
 			v.dup.Add(1)
 		}
 		ts := now
@@ -266,7 +255,6 @@ func (v *Video) paceLoop(ctx context.Context) {
 			return
 		}
 		v.fed.Add(1)
-		lastFed = now
 	}
 }
 
