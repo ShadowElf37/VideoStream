@@ -44,22 +44,29 @@ func TestAudioTSWrapsCleanly(t *testing.T) {
 	}
 }
 
-func TestEmitterDepthSmoothing(t *testing.T) {
+func TestEmitterFillSmoothing(t *testing.T) {
 	e := NewEmitter(0.5)
-	for range 30 {
-		e.Step(true, 4)
+	// A steady 8 KB FIFO fill is the ~43 ms lead the probe measured.
+	for range 40 {
+		e.Step(true, 8192)
 	}
-	if d := e.Depth(); math.Abs(d-4) > 0.01 {
-		t.Fatalf("depth = %v, want ~4", d)
+	if d := e.Fill(); math.Abs(d-8192) > 1 {
+		t.Fatalf("fill = %v, want ~8192", d)
 	}
-	if got, want := e.AudioDelay(), 4*ChunkDur; absDur(got-want) > 2*time.Millisecond {
-		t.Fatalf("audio delay = %v, want ~%v", got, want)
+	if got, want := e.Lead(), LeadOf(8192); absDur(got-want) > time.Millisecond {
+		t.Fatalf("lead = %v, want ~%v", got, want)
+	}
+	if got := LeadOf(8192); absDur(got-42667*time.Microsecond) > time.Millisecond {
+		t.Fatalf("LeadOf(8192) = %v, want ~42.7ms", got)
+	}
+	if LeadOf(0) != 0 || LeadOf(-5) != 0 {
+		t.Fatalf("a non-positive fill must be no lead")
 	}
 	e.Reset()
-	if e.Depth() != 0 {
-		t.Fatalf("reset did not clear depth")
+	if e.Fill() != 0 {
+		t.Fatalf("reset did not clear the fill estimate")
 	}
-	if e.Index() != 30 {
+	if e.Index() != 40 {
 		t.Fatalf("reset must not rewind the index, got %d", e.Index())
 	}
 }

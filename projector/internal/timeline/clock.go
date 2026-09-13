@@ -1,12 +1,17 @@
 // Package timeline is the projector's media clock.
 //
-// mpv is the master clock: it writes s16 PCM into a FIFO paced by its own
-// real-time clock, so the arrival of audio defines the media timeline. The
-// emitter runs on a 20 ms wall-clock cadence anchored to a monotonic epoch and
-// emits exactly one chunk per tick — a real one if the reader has queued any,
-// otherwise silence — so audio RTP timestamps are chunkIndex*960 and can never
-// skip or drift. Video frames are stamped from their render wall time, shifted
-// forward by the smoothed audio queue depth so the two tracks line up.
+// mpv writes s16 PCM into a FIFO; we read it back on an absolute 20 ms
+// schedule anchored to a monotonic epoch — exactly one 960-sample chunk per
+// tick, never reading ahead. Because mpv's ao_pcm blocks once the pipe fills,
+// those paced reads are what slave mpv to *our* clock: draining as fast as data
+// arrives instead lets mpv free-run about 0.2 % fast and the lead grows without
+// bound. If a whole chunk is not there at a tick (pause, seek, idle) we emit
+// silence, so audio RTP timestamps are chunkIndex*960 and can never skip.
+//
+// The audio lead is then simply how much mpv has written that we have not
+// consumed: the FIFO fill, read with FIONREAD at each tick. Video frames are
+// stamped from their render wall time shifted forward by that (smoothed) lead,
+// which is what lines the two tracks up.
 //
 // This file holds the pure math; it has no dependency on mpv, ffmpeg or the OS.
 package timeline
@@ -31,7 +36,18 @@ const (
 	ChunkDur = time.Duration(ChunkSamples) * time.Second / SampleRate
 	// VideoClock is the RTP clock rate of the video track.
 	VideoClock = 90000
+	// BytesPerSecond is the s16 stereo PCM byte rate, used to convert a FIFO
+	// fill in bytes into an audio lead in time.
+	BytesPerSecond = SampleRate * Channels * 2
 )
+
+// LeadOf converts a FIFO fill in bytes into the audio lead it represents.
+func LeadOf(fillBytes float64) time.Duration {
+	if fillBytes <= 0 {
+		return 0
+	}
+	return time.Duration(fillBytes / BytesPerSecond * float64(time.Second))
+}
 
 // AudioTS48k returns the RTP timestamp of the chunk with the given index.
 // It is derived only from the index, never from wall time.
@@ -45,18 +61,18 @@ type Step struct {
 }
 
 // Emitter is the audio side of the clock: it hands out one Step per 20 ms tick
-// and keeps a smoothed estimate of how many chunks are waiting in the queue.
+// and keeps a smoothed estimate of the FIFO fill (the audio lead).
 // It is not safe for concurrent use; one goroutine owns it.
 type Emitter struct {
 	index   int64
-	depth   float64
+	fill    float64
 	alpha   float64
 	silence int64
 	emitted int64
 }
 
-// NewEmitter returns an emitter whose queue-depth estimate uses the given
-// smoothing factor (0 < alpha <= 1); alpha <= 0 selects a sensible default.
+// NewEmitter returns an emitter whose fill estimate uses the given smoothing
+// factor (0 < alpha <= 1); alpha <= 0 selects a sensible default.
 func NewEmitter(alpha float64) *Emitter {
 	if alpha <= 0 || alpha > 1 {
 		alpha = 0.05
@@ -64,10 +80,10 @@ func NewEmitter(alpha float64) *Emitter {
 	return &Emitter{alpha: alpha}
 }
 
-// Step emits the next chunk. haveChunk says whether a real chunk was taken off
-// the queue; queueDepth is how many chunks remain queued after that take.
-func (e *Emitter) Step(haveChunk bool, queueDepth int) Step {
-	e.depth += e.alpha * (float64(queueDepth) - e.depth)
+// Step emits the next chunk. haveChunk says whether a whole chunk was read from
+// the FIFO; fillBytes is what FIONREAD reported after that read.
+func (e *Emitter) Step(haveChunk bool, fillBytes int) Step {
+	e.fill += e.alpha * (float64(fillBytes) - e.fill)
 	s := Step{Index: e.index, TS48k: AudioTS48k(e.index), Silence: !haveChunk}
 	e.index++
 	e.emitted++
@@ -86,22 +102,22 @@ func (e *Emitter) Emitted() int64 { return e.emitted }
 // SilenceCount is how many of them were synthesised silence.
 func (e *Emitter) SilenceCount() int64 { return e.silence }
 
-// Depth is the smoothed queue depth in chunks.
-func (e *Emitter) Depth() float64 { return e.depth }
+// Fill is the smoothed FIFO fill in bytes.
+func (e *Emitter) Fill() float64 { return e.fill }
 
-// AudioDelay is the smoothed queue depth expressed as a duration: how far
-// behind the wall clock the audio the viewer is hearing actually is.
-func (e *Emitter) AudioDelay() time.Duration {
-	return time.Duration(e.depth * float64(ChunkDur))
-}
+// Lead is the smoothed fill expressed as a duration: how far ahead of what the
+// viewer is hearing mpv has already produced, and therefore how far forward a
+// frame rendered now has to be placed on the media timeline.
+func (e *Emitter) Lead() time.Duration { return LeadOf(e.fill) }
 
-// Reset clears the queue-depth estimate (used after a seek drain) without
-// touching the chunk index, which must never go backwards.
-func (e *Emitter) Reset() { e.depth = 0 }
+// Reset clears the fill estimate (used after a seek drain) without touching the
+// chunk index, which must never go backwards.
+func (e *Emitter) Reset() { e.fill = 0 }
 
-// VideoTicks maps a wall-clock instant onto the 90 kHz media timeline.
-func VideoTicks(epoch, wall time.Time, audioDelay time.Duration) int64 {
-	d := wall.Sub(epoch) + audioDelay
+// VideoTicks maps a wall-clock instant onto the 90 kHz media timeline, shifted
+// forward by the current audio lead.
+func VideoTicks(epoch, wall time.Time, lead time.Duration) int64 {
+	d := wall.Sub(epoch) + lead
 	if d < 0 {
 		d = 0
 	}
@@ -123,8 +139,8 @@ func NewVideoStamper(epoch time.Time) *VideoStamper {
 }
 
 // Stamp returns the RTP timestamp for a frame presented at wall.
-func (v *VideoStamper) Stamp(wall time.Time, audioDelay time.Duration) uint32 {
-	t := VideoTicks(v.epoch, wall, audioDelay)
+func (v *VideoStamper) Stamp(wall time.Time, lead time.Duration) uint32 {
+	t := VideoTicks(v.epoch, wall, lead)
 	if v.has && t < v.last {
 		v.late++
 		t = v.last

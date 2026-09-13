@@ -3,7 +3,6 @@
 package timeline
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 
@@ -12,16 +11,20 @@ import (
 
 // fifo is the read end of mpv's ao-pcm FIFO.
 //
-// Two tricks make this well behaved:
-//   - the read end is opened O_NONBLOCK so we do not wait for mpv to open the
-//     write end, and we poll(2) with a timeout instead of blocking, which keeps
-//     the goroutine cancellable without busy-looping;
+// Two details make this well behaved:
+//   - the read end is opened O_NONBLOCK so we neither wait for mpv to open the
+//     write end nor ever block inside a tick;
 //   - we hold a dummy write end open ourselves, so when mpv tears its AO down
 //     (track change, end of file) the FIFO never reports EOF and the reader
 //     does not have to reopen it.
+//
+// Reads are *paced*: exactly one 20 ms chunk per 20 ms tick, never ahead. That
+// is what slaves mpv to our clock — it blocks on its own write once the pipe is
+// full, so the steady-state fill is small and constant instead of growing.
 type fifo struct {
-	rd int
-	wr int
+	rd   int
+	wr   int
+	part []byte // carry for a short read
 }
 
 // MakeFIFO creates (replacing any stale one) the named pipe mpv writes PCM to.
@@ -46,7 +49,7 @@ func openFIFO(path string) (*fifo, error) {
 		unix.Close(rd)
 		return nil, &os.PathError{Op: "open-keepalive", Path: path, Err: err}
 	}
-	return &fifo{rd: rd, wr: wr}, nil
+	return &fifo{rd: rd, wr: wr, part: make([]byte, 0, ChunkBytes)}, nil
 }
 
 func (f *fifo) Close() error {
@@ -54,8 +57,51 @@ func (f *fifo) Close() error {
 	return unix.Close(f.rd)
 }
 
-// discard reads and throws away everything currently buffered in the FIFO.
-func (f *fifo) discard(scratch []byte) int {
+// fill is how many bytes mpv has written that we have not consumed yet: the
+// audio lead, and the number we compensate the video timestamps by.
+func (f *fifo) fill() int {
+	n, err := unix.IoctlGetInt(f.rd, fionread)
+	if err != nil {
+		return len(f.part)
+	}
+	return n + len(f.part)
+}
+
+// readChunk reads exactly one 20 ms chunk if a whole one is available. It
+// returns false without consuming anything when the FIFO is short, which is
+// how a pause, a seek or an idle mpv turns into emitted silence.
+func (f *fifo) readChunk(dst []int16) bool {
+	if f.fill() < ChunkBytes {
+		return false
+	}
+	buf := make([]byte, ChunkBytes)
+	got := copy(buf, f.part)
+	f.part = f.part[:0]
+	for got < ChunkBytes {
+		n, err := unix.Read(f.rd, buf[got:])
+		if n > 0 {
+			got += n
+			continue
+		}
+		if err == unix.EINTR {
+			continue
+		}
+		// Short pipe read: keep the fragment for the next tick rather than
+		// losing sample alignment.
+		f.part = append(f.part[:0], buf[:got]...)
+		return false
+	}
+	for i := range dst {
+		dst[i] = int16(uint16(buf[2*i]) | uint16(buf[2*i+1])<<8)
+	}
+	return true
+}
+
+// discard throws away everything currently buffered; used on seek so pre-seek
+// audio never reaches the viewers.
+func (f *fifo) discard() int {
+	f.part = f.part[:0]
+	scratch := make([]byte, 64<<10)
 	n := 0
 	for {
 		k, err := unix.Read(f.rd, scratch)
@@ -64,80 +110,6 @@ func (f *fifo) discard(scratch []byte) int {
 		}
 		if err != nil || k <= 0 || k < len(scratch) {
 			return n
-		}
-	}
-}
-
-// readLoop drains the FIFO as data arrives and cuts it into 20 ms chunks.
-// It stops reading when the queue is nearly full so mpv feels back-pressure
-// and slows down, which is exactly how mpv stays slaved to real time.
-func (t *Timeline) readLoop(ctx context.Context, f *fifo) {
-	raw := make([]byte, ChunkBytes*4)
-	part := make([]byte, 0, ChunkBytes*2)
-	pfd := []unix.PollFd{{Fd: int32(f.rd), Events: unix.POLLIN}}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.flushReq:
-			n := f.discard(raw)
-			part = part[:0]
-			q := t.drainQueue()
-			t.flushes.Add(1)
-			t.em.Reset()
-			t.log.Debug("timeline: flushed on seek", "fifoBytes", n, "queuedChunks", q)
-		default:
-		}
-
-		if len(t.q) >= cap(t.q)-2 {
-			// Queue is full: stop reading. mpv blocks on its write and stalls,
-			// which is the back-pressure that keeps it on our clock.
-			if _, err := unix.Poll(pfd, 5); err != nil && err != unix.EINTR {
-				t.log.Warn("timeline: poll failed", "err", err)
-				return
-			}
-			continue
-		}
-
-		n, err := unix.Poll(pfd, 200)
-		if err != nil {
-			if err == unix.EINTR {
-				continue
-			}
-			t.log.Warn("timeline: poll failed", "err", err)
-			return
-		}
-		if n == 0 {
-			continue
-		}
-
-		k, err := unix.Read(f.rd, raw)
-		if err != nil {
-			if err == unix.EAGAIN || err == unix.EINTR {
-				continue
-			}
-			t.log.Warn("timeline: fifo read failed", "err", err)
-			return
-		}
-		if k <= 0 {
-			continue
-		}
-		t.read.Add(int64(k))
-		part = append(part, raw[:k]...)
-		for len(part) >= ChunkBytes {
-			pcm := make([]int16, ChunkFrames)
-			b := part[:ChunkBytes]
-			for i := range pcm {
-				pcm[i] = int16(uint16(b[2*i]) | uint16(b[2*i+1])<<8)
-			}
-			part = append(part[:0], part[ChunkBytes:]...)
-			select {
-			case t.q <- pcm:
-			default:
-				// Should not happen: the fill check above leaves headroom.
-				t.log.Warn("timeline: chunk queue overflow, dropping")
-			}
 		}
 	}
 }
