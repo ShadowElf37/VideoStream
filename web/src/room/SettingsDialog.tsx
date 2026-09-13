@@ -155,9 +155,9 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
           {supportsJitterBufferTarget ? (
             <Field
               label={`Smoothness · ${prefs.smoothnessSec.toFixed(1)} s buffer`}
-              hint="Higher = fewer stutters on shaky Wi-Fi, but the picture lags the host a little more. Applies to video and audio together."
+              hint="How far behind the projector your picture runs. Higher rides out shaky Wi-Fi; lower makes pause and seek feel immediate, because what you see is closer to live. Applies to video and audio together."
             >
-              <Slider label="Smoothness" min={0.2} max={2.5} step={0.1} value={prefs.smoothnessSec} onChange={(v) => prefs.set('smoothnessSec', +v.toFixed(1))} ticks={[1.5]} accent />
+              <Slider label="Smoothness" min={0.2} max={2.5} step={0.1} value={prefs.smoothnessSec} onChange={(v) => prefs.set('smoothnessSec', +v.toFixed(1))} ticks={[0.5]} accent />
             </Field>
           ) : (
             <p className="text-xs text-muted">

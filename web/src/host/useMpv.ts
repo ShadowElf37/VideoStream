@@ -111,7 +111,7 @@ export function useMpvPlumbing(room: Room | null, connected: boolean): MpvClient
   }, [room, store]);
 
   const client = useMemo<MpvClient>(() => {
-    const send = (cmd: unknown[], opts: { timeoutMs?: number } = {}): Promise<MpvReply> => {
+    const sendOnce = (cmd: unknown[], opts: { timeoutMs?: number } = {}): Promise<MpvReply> => {
       if (!room) return Promise.resolve({ id: 0, ok: false, error: 'not connected' });
       const id = nextId.current++;
       const msg: MpvCommand = { id, cmd };
@@ -123,6 +123,23 @@ export function useMpvPlumbing(room: Room | null, connected: boolean): MpvClient
         pending.current.set(id, { resolve, timer });
         void publish(room, Topics.mpvCmd, msg, { reliable: true, to: [PROJECTOR_IDENTITY] });
       });
+    };
+
+    // The projector cannot always tell who sent a command. LiveKit withholds
+    // the participant roster from it (its token cannot subscribe, and that is
+    // deliberate), so it identifies senders only from what LiveKit attaches to
+    // each packet — which is missing for the first packet or two after a join.
+    // The result was that the first thing a host did on entering a room came
+    // back "host role required", most visibly an empty Queue tab.
+    //
+    // Retrying once fixes it because by then the projector has seen us. This
+    // lives here rather than in the projector because the projector has no way
+    // to resolve the sender on its own; only a later packet helps.
+    const send = async (cmd: unknown[], opts: { timeoutMs?: number } = {}): Promise<MpvReply> => {
+      const first = await sendOnce(cmd, opts);
+      if (first.ok || first.error !== 'host role required') return first;
+      await new Promise((r) => setTimeout(r, 400));
+      return sendOnce(cmd, opts);
     };
     const fsList = async (dir: string): Promise<FsList> => {
       const r = await send(['vs/fs.list', dir], { timeoutMs: 15000 });
