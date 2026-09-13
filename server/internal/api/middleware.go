@@ -72,6 +72,18 @@ func corsMiddleware(next http.Handler) http.Handler {
 // checks that the session's roomId matches the {id} path value, stashing
 // the verified session in the request context for handlers to use.
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
+	return s.session(true, next)
+}
+
+// requireAnySession is requireSession without the room check, for endpoints
+// that are not about one room. The media library is shared by every room, so
+// there is no {id} in its path to match against — but a caller still has to
+// prove they belong to some room on this server.
+func (s *Server) requireAnySession(next http.HandlerFunc) http.HandlerFunc {
+	return s.session(false, next)
+}
+
+func (s *Server) session(matchRoom bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
 		const prefix = "Bearer "
@@ -92,7 +104,7 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		if sess.RoomID != r.PathValue("id") {
+		if matchRoom && sess.RoomID != r.PathValue("id") {
 			writeError(w, http.StatusUnauthorized, "session does not match room")
 			return
 		}

@@ -68,8 +68,12 @@ services:
     env_file: .env
     volumes:
       - ./data:/data # SQLite lives here; back this directory up
+      # Pushed titles. The app both serves these and deletes them on request,
+      # so unlike the house projector's mount this one is writable.
+      - ./media:/media
     environment:
       DB_PATH: /data/videostream.db
+      MEDIA_ROOT: /media
       LISTEN: ":8080"
       PUBLIC_URL: https://${DOMAIN}
       # Browsers talk to LiveKit through Caddy on the public name…

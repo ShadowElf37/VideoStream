@@ -9,6 +9,7 @@ import (
 
 	"github.com/ShadowElf37/VideoStream/server/internal/chat"
 	"github.com/ShadowElf37/VideoStream/server/internal/config"
+	"github.com/ShadowElf37/VideoStream/server/internal/media"
 	"github.com/ShadowElf37/VideoStream/server/internal/rooms"
 )
 
@@ -20,6 +21,7 @@ type Server struct {
 	lkClient *lksdk.RoomServiceClient
 	logger   *slog.Logger
 	house    houseState
+	library  *media.Library
 }
 
 // NewServer wires up a Server with its dependencies.
@@ -27,7 +29,11 @@ func NewServer(cfg *config.Config, roomsSvc *rooms.Service, chatSvc *chat.Servic
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, rooms: roomsSvc, chat: chatSvc, lkClient: lkClient, logger: logger}
+	s := &Server{cfg: cfg, rooms: roomsSvc, chat: chatSvc, lkClient: lkClient, logger: logger}
+	if cfg.MediaRoot != "" {
+		s.library = media.New(cfg.MediaRoot)
+	}
+	return s
 }
 
 // Routes builds the full HTTP handler: the JSON API plus the embedded SPA
@@ -43,6 +49,13 @@ func (s *Server) Routes(spa http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/rooms/{id}/chat", s.requireSession(s.handleGetChat))
 	mux.HandleFunc("POST /api/rooms/{id}/chat", s.requireSession(s.handlePostChat))
 	mux.HandleFunc("PATCH /api/rooms/{id}/settings", s.requireSession(s.handlePatchSettings))
+
+	// The pushed media library. Listing is session-gated; the bytes are
+	// behind a signed URL, because a <video src> sends no headers.
+	mux.HandleFunc("GET /api/media", s.requireAnySession(s.handleListMedia))
+	mux.HandleFunc("DELETE /api/media/{id}", s.requireAnySession(s.handleDeleteMedia))
+	mux.HandleFunc("GET /media/{id}/{file}", s.handleMediaFile)
+	mux.HandleFunc("GET /api/time", s.handleServerTime)
 
 	// The house projector: polled by the projector service itself, and
 	// switched on and off by the room's host.
