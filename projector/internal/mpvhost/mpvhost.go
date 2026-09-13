@@ -102,6 +102,19 @@ func New(log *slog.Logger, cfg Config) (*Host, error) {
 		{"audio-channels", "stereo"},
 		{"audio-normalize-downmix", "yes"},
 		{"hwdec", "auto-copy"},
+		// mpv's default framedrop=vo decides a frame is too late to bother
+		// rendering by comparing against the VO's display timing. With
+		// vo=libmpv there is no display: we render on demand and hand the
+		// frame to an encoder, so that estimate is meaningless — and mpv acts
+		// on it, silently dropping frames it has already decoded. On a 1080p24
+		// 10-bit HEVC source it dropped ~16 of every 24 frames (decoder drops
+		// stayed at 0), which the output loop then papered over by re-sending
+		// the previous frame: a steady 24 fps of which only ~8 were new.
+		// Nothing downstream can detect that — the encoder, the SFU and the
+		// browser all see a well-formed 24 fps stream.
+		// We do our own pacing and report genuine misses as dupFrames, so mpv
+		// must hand us every frame it decodes.
+		{"framedrop", "no"},
 		{"keep-open", "yes"},
 		{"idle", "yes"},
 		{"terminal", "no"},
