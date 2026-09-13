@@ -116,10 +116,13 @@ export function useRoomEvents(room: Room | null) {
 function describeEvent(type: string, data?: Record<string, unknown>): string {
   const at = typeof data?.timePos === 'number' ? ` at ${formatTime(data.timePos)}` : '';
   switch (type) {
+    // These come from mpv, which knows the playback changed but not who asked
+    // for it — and with anyoneCanPause on it is often not the host. Stay
+    // neutral rather than claim an actor we cannot identify.
     case 'pause':
-      return `Host paused${at}`;
+      return `Paused${at}`;
     case 'unpause':
-      return `Host resumed${at}`;
+      return `Resumed${at}`;
     case 'seek':
       return `Seeked${at}`;
     case 'file-loaded':

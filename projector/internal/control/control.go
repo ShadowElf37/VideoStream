@@ -29,6 +29,9 @@ type Deps struct {
 	Roots []string
 	// MaxPreset caps vs/quality.
 	MaxPreset string
+	// AnyoneCanPause is the room setting's initial value, from the token
+	// response. Kept current from the server's `settings` broadcasts.
+	AnyoneCanPause bool
 	// SetQuality switches the encoder preset.
 	SetQuality func(preset string) error
 	// State returns the full state, with the projector-owned fields filled in.
@@ -47,6 +50,10 @@ type Controller struct {
 	lastSent time.Time
 	dirty    bool
 	wake     chan struct{}
+
+	// Guards the room setting, which the server can change mid-session.
+	setMu          sync.RWMutex
+	anyoneCanPause bool
 }
 
 // New creates a controller.
@@ -54,7 +61,12 @@ func New(deps Deps) *Controller {
 	if deps.MaxPreset == "" {
 		deps.MaxPreset = proto.Preset1080pHigh
 	}
-	return &Controller{deps: deps, log: deps.Log, wake: make(chan struct{}, 1)}
+	return &Controller{
+		deps:           deps,
+		log:            deps.Log,
+		wake:           make(chan struct{}, 1),
+		anyoneCanPause: deps.AnyoneCanPause,
+	}
 }
 
 // Touch marks the state dirty so it is broadcast on the next loop iteration.
@@ -116,6 +128,23 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 	if topic == "" {
 		topic = params.Topic
 	}
+	// The server broadcasts room settings when the host changes them; the
+	// pause permission below has to follow that without a restart.
+	if topic == proto.TopicSettings {
+		var st proto.RoomSettings
+		if err := json.Unmarshal(u.Payload, &st); err != nil {
+			c.log.Warn("control: bad settings payload", "err", err)
+			return
+		}
+		c.setMu.Lock()
+		changed := c.anyoneCanPause != st.AnyoneCanPause
+		c.anyoneCanPause = st.AnyoneCanPause
+		c.setMu.Unlock()
+		if changed {
+			c.log.Info("control: room settings changed", "anyoneCanPause", st.AnyoneCanPause)
+		}
+		return
+	}
 	if topic != proto.TopicMpvCmd {
 		return
 	}
@@ -127,22 +156,56 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 	if sender == nil && identity != "" {
 		sender = c.deps.Pub.Room().GetParticipantByIdentity(identity)
 	}
-	if role := publish.RoleOf(sender); role != proto.RoleHost {
-		c.log.Warn("control: rejecting mpv.cmd from non-host",
-			"identity", identity, "role", role)
-		return
-	}
-
 	var cmd proto.MpvCommand
 	if err := json.Unmarshal(u.Payload, &cmd); err != nil {
 		c.log.Warn("control: bad mpv.cmd payload", "err", err)
 		return
+	}
+
+	// Everything is host-only except pausing, which the room setting can open
+	// up to viewers. The command is checked rather than the intent: a viewer
+	// with anyoneCanPause may toggle pause and nothing else — not seek, not
+	// loadfile, not quality.
+	if role := publish.RoleOf(sender); role != proto.RoleHost {
+		if !(c.pauseAllowed() && isPauseCommand(cmd.Cmd)) {
+			c.log.Warn("control: rejecting mpv.cmd from non-host",
+				"identity", identity, "role", role, "cmd", cmd.Cmd)
+			return
+		}
 	}
 	reply := c.dispatch(cmd)
 	if err := c.deps.Pub.SendData(reply, proto.TopicMpvReply, true, []string{identity}); err != nil {
 		c.log.Warn("control: reply publish failed", "err", err)
 	}
 	c.Touch()
+}
+
+func (c *Controller) pauseAllowed() bool {
+	c.setMu.RLock()
+	defer c.setMu.RUnlock()
+	return c.anyoneCanPause
+}
+
+// isPauseCommand reports whether cmd does nothing but pause or unpause:
+// ["cycle","pause"] or ["set","pause",<value>]. Anything longer or with a
+// different property is not a pause command, so a viewer cannot smuggle a
+// seek through as one.
+func isPauseCommand(cmd []any) bool {
+	if len(cmd) < 2 {
+		return false
+	}
+	name, _ := cmd[0].(string)
+	prop, _ := cmd[1].(string)
+	if prop != "pause" {
+		return false
+	}
+	switch name {
+	case "cycle":
+		return len(cmd) == 2
+	case "set":
+		return len(cmd) == 3
+	}
+	return false
 }
 
 func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {

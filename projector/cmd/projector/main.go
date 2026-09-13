@@ -152,8 +152,12 @@ func run(log *slog.Logger, o runOpts) error {
 	log.Info("media roots", "roots", roots)
 
 	wsURL, token := o.lkURL, o.lkToken
+	// Room settings come with the token. With --url/--token there is no app
+	// server to ask, so the zero value stands until the first `settings`
+	// broadcast arrives.
+	var settings proto.RoomSettings
 	if o.roomLink != "" {
-		wsURL, token, err = fetchToken(ctx, o.roomLink)
+		wsURL, token, settings, err = fetchToken(ctx, o.roomLink)
 		if err != nil {
 			return err
 		}
@@ -267,6 +271,8 @@ func run(log *slog.Logger, o runOpts) error {
 		SetQuality: p.setQuality,
 		State:      p.state,
 		OnEvent:    p.onEvent,
+
+		AnyoneCanPause: settings.AnyoneCanPause,
 	})
 
 	if err := p.rebuildEncoder(ctx); err != nil {
@@ -481,18 +487,19 @@ func (p *projector) statusLoop(ctx context.Context) {
 
 // fetchToken turns a projector link into a LiveKit URL and join token by
 // calling the app server's POST /api/rooms/{id}/token endpoint.
-func fetchToken(ctx context.Context, link string) (string, string, error) {
+func fetchToken(ctx context.Context, link string) (string, string, proto.RoomSettings, error) {
+	var none proto.RoomSettings
 	u, err := url.Parse(link)
 	if err != nil {
-		return "", "", fmt.Errorf("bad --room link: %w", err)
+		return "", "", none, fmt.Errorf("bad --room link: %w", err)
 	}
 	key := u.Query().Get("p")
 	if key == "" {
-		return "", "", errors.New("--room link has no ?p=<projectorKey>")
+		return "", "", none, errors.New("--room link has no ?p=<projectorKey>")
 	}
 	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
 	if len(parts) < 2 || parts[len(parts)-2] != "r" {
-		return "", "", fmt.Errorf("--room link path should look like /r/<roomId>, got %q", u.Path)
+		return "", "", none, fmt.Errorf("--room link path should look like /r/<roomId>, got %q", u.Path)
 	}
 	roomID := parts[len(parts)-1]
 
@@ -500,24 +507,24 @@ func fetchToken(ctx context.Context, link string) (string, string, error) {
 	endpoint := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/api/rooms/" + roomID + "/token"}).String()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", "", err
+		return "", "", none, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("token request: %w", err)
+		return "", "", none, fmt.Errorf("token request: %w", err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("token request: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		return "", "", none, fmt.Errorf("token request: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
 	}
 	var tr proto.TokenResponse
 	if err := json.Unmarshal(raw, &tr); err != nil {
-		return "", "", fmt.Errorf("token response: %w", err)
+		return "", "", none, fmt.Errorf("token response: %w", err)
 	}
 	if tr.Token == "" || tr.URL == "" {
-		return "", "", errors.New("token response missing token or url")
+		return "", "", none, errors.New("token response missing token or url")
 	}
-	return tr.URL, tr.Token, nil
+	return tr.URL, tr.Token, tr.Settings, nil
 }
