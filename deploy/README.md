@@ -321,5 +321,6 @@ lk room join --publish-demo --url ws://localhost:7880 \
 | TURN never relays | hairpin DNAT missing (`sudo iptables -t nat -L OUTPUT -n`), or UDP 30000–30100 closed |
 | `livekit` logs a TURN cert error | certificate not issued yet, or the path in `livekit.yaml` does not match — `sudo docker compose exec livekit ls /caddy/caddy/certificates/*/turn.$DOMAIN/` |
 | Rules vanish after reboot | `netfilter-persistent save` was not run |
+| `app` restarts on "unable to open database file (14)" | `deploy/data` not owned by the container user — `sudo chown -R 65532:65532 deploy/data` |
 | App page says "web build not present" | the image was built without the web stage — `sudo docker compose build --no-cache app` |
 | `compose build app` fails on `npm ci` | out of memory or disk — `df -h`, and check the shape really has 24 GB RAM |

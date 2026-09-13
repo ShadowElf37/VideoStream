@@ -218,7 +218,12 @@ envsubst '${LIVEKIT_API_KEY} ${LIVEKIT_API_SECRET}' <ingress.yaml.tmpl >ingress.
 chmod 600 livekit.yaml ingress.yaml
 info "wrote livekit.yaml and ingress.yaml (mode 600 — they contain the API secret)"
 
-mkdir -p data # SQLite lives here, bind-mounted into the app container
+# SQLite lives here, bind-mounted into the app container. The runtime image is
+# distroless:nonroot, so the server runs as uid 65532 and cannot write into a
+# directory owned by the login user — without this chown the app crash-loops on
+# "migrate: unable to open database file (14)".
+mkdir -p data
+$SUDO chown -R 65532:65532 data
 
 # --------------------------------------------------------------------------
 # 6. bring the stack up
