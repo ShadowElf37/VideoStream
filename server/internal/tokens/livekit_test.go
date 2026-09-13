@@ -85,9 +85,14 @@ func TestMintLiveKitTokenProjectorGrants(t *testing.T) {
 	}
 	grants := decodeGrants(t, jwt, "key", "secret-at-least-32-bytes-long!!")
 	vg := grants.Video
-	if vg.CanSubscribe == nil || *vg.CanSubscribe {
-		t.Error("projector should not be able to subscribe")
+	// Subscribe is granted even though the projector subscribes to nothing:
+	// LiveKit withholds the participant roster from anyone who cannot
+	// subscribe, and without the roster the projector cannot tell whether a
+	// command came from the host. It joins with AutoSubscribe off.
+	if vg.CanSubscribe == nil || !*vg.CanSubscribe {
+		t.Error("projector needs subscribe permission to receive the participant roster")
 	}
+	// It must still not be able to publish a microphone.
 	wantSources := []string{"screen_share", "screen_share_audio"}
 	if !stringSlicesEqual(vg.CanPublishSources, wantSources) {
 		t.Errorf("canPublishSources = %v, want %v", vg.CanPublishSources, wantSources)
