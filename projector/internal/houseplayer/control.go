@@ -25,13 +25,17 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/ShadowElf37/VideoStream/projector/internal/mediafs"
+	"github.com/ShadowElf37/VideoStream/projector/internal/publish"
 	"github.com/ShadowElf37/VideoStream/proto"
 )
 
 // Transport is the publisher surface the controller needs.
 type Transport interface {
 	SendData(v any, topic string, reliable bool, to []string) error
-	RoleOf(identity string) string
+	// Participant resolves an identity against the room's roster. It is the
+	// fallback for working out a sender's role when the packet did not carry
+	// the participant itself.
+	Participant(identity string) *lksdk.RemoteParticipant
 }
 
 // Controller wires a Player to the room's data channel.
@@ -133,7 +137,7 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 		c.log.Warn("house: bad mpv.cmd payload", "err", err)
 		return
 	}
-	if role := c.tx.RoleOf(identity); role != proto.RoleHost {
+	if role := c.roleOf(params, identity); role != proto.RoleHost {
 		if !(c.anyoneCanPause.Load() && IsPauseCommand(cmd.Cmd)) {
 			c.log.Warn("house: rejecting mpv.cmd from non-host",
 				"identity", identity, "role", role, "cmd", cmd.Cmd)
@@ -144,6 +148,22 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 	if err := c.tx.SendData(reply, proto.TopicMpvReply, true, []string{identity}); err != nil {
 		c.log.Warn("house: reply failed", "err", err)
 	}
+}
+
+// roleOf prefers the participant the packet arrived with and falls back to the
+// room roster. The roster lookup alone is not enough: a command can arrive
+// before the SDK has the sender in its participant list, and the role then
+// reads as empty, which rejected the host's own commands.
+func (c *Controller) roleOf(params lksdk.DataReceiveParams, identity string) string {
+	if params.Sender != nil {
+		if role := publish.RoleOf(params.Sender); role != "" {
+			return role
+		}
+	}
+	if identity == "" {
+		return ""
+	}
+	return publish.RoleOf(c.tx.Participant(identity))
 }
 
 // IsPauseCommand matches exactly a pause toggle, so a viewer allowed to pause

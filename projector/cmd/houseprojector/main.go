@@ -234,9 +234,6 @@ func (t *transport) SendData(v any, topic string, reliable bool, to []string) er
 	return t.pub.SendData(v, topic, reliable, to)
 }
 
-func (t *transport) RoleOf(identity string) string {
-	if identity == "" {
-		return ""
-	}
-	return publish.RoleOf(t.pub.Room().GetParticipantByIdentity(identity))
+func (t *transport) Participant(identity string) *lksdk.RemoteParticipant {
+	return t.pub.Room().GetParticipantByIdentity(identity)
 }
