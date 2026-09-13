@@ -194,3 +194,61 @@ Implemented and verified locally end to end (projector → livekit-server --dev 
 - `projector/`: libmpv SW render, paced FIFO audio clock (fill flat over 2 min), ffmpeg h264_videotoolbox, in-process Opus, own RTP packetization with absolute timestamps, data-channel control with host-role check, media-root allowlist. Measured: 24.00 fps, 0 timestamp regressions across pause/seek/quality change, A/V delta ≈ 23 ms, IDR every 2.00 s including during pause.
 
 Next: provision the Oracle VM and domain (Phase 0 script is ready); test with a real MKV (ASS subs, DTS/AC3 audio) and a yt-dlp URL; Linux host run (VA-API/NVENC/libx264 fallback); simulcast second layer; 60-minute drift soak with the sync clip; Windows named-pipe audio path; GL render path if 4K sources are too slow for the SW renderer.
+
+## Status (2026-09-13, second session)
+
+Provisioned and running at `https://<ip>.sslip.io` on an Oracle Ampere A1
+(4 OCPU / 24 GB / 4 Gbps), and then **reoriented around file-on-server
+playback**, which is the significant architectural change since the first
+session.
+
+**Why.** Using the live path surfaced a class of problem that was not a bug but
+a consequence of the transport. Measured: pressing pause, the projector acted
+in **0 ms** while the browser kept decoding for **1555 ms / 37 further frames**
+— `jitterBufferTarget`, set from `smoothnessSec`. Every host action landed that
+late, viewers sat at different points by their own buffer depths, and a WebRTC
+jitter buffer cannot be buffered far ahead, retained, or seeked.
+
+**The change.** Playback time is no longer implicit in whichever frames have
+arrived. The app server owns an anchor per room — "media time M was true at
+server time A, advancing at rate R" — and each browser fetches a normal MP4
+over HTTPS, buffers as deeply as it likes, and locks its own playhead to that.
+
+  pause   1555 ms -> 15 ms, 0 frames advanced
+  buffer  1.5 s jitter buffer -> 60.9 s retained across the pause
+  seek    landed in 271 ms, buffer kept
+
+**Shape now.**
+
+- `projector/cmd/vspush` prepares a title on the machine holding the files
+  (one ffmpeg pass, ~8x real time) and copies it up: `<id>/movie.mp4` +
+  `<id>/meta.json`. The server cannot encode — x264 1080p runs 0.35x there.
+- `server/internal/media` serves it behind a signed URL, because a `<video
+  src>` cannot send an Authorization header. `http.ServeContent` gives Range
+  and 416 for free.
+- `server/internal/playback` is the director: the anchor, the queue, the
+  broadcasts.
+- `web/src/movie` is the client: NTP-style clock offset, a deadband control
+  law with hysteresis, and a `<video>` whose `src` is never reassigned except
+  on a real media change.
+- The desktop projector remains as the fallback for URLs, live track
+  switching and anything unpushed. Its limitations are now explicit rather
+  than incidental.
+
+**Retired.** The RTP house projector and everything specific to it —
+`houseplayer`, `houseprojector`, the `.vsm` format, the compose profile,
+`HOUSE_SECRET`, the room assignment API, and the roster race it made
+unavoidable.
+
+**Fixed along the way.** mpv's `framedrop=vo` was discarding ~16 of every 24
+decoded frames on 10-bit HEVC, which nothing downstream could detect; RTP
+timestamps rewound on a backward seek and froze the picture for the seek
+distance; frame times were index × a truncated frame duration, ~2 s of drift
+over a feature; `anyoneCanPause` was enforced nowhere that could act on it;
+chapter titles arrive cp1252-mangled from some releases and are repaired at
+push time.
+
+**Not yet done.** A second (720p) rendition — HTTP delivery has no simulcast,
+so a viewer who cannot sustain the bitrate stalls where WebRTC would have gone
+blurry. Intent echo for seeks (a viewer sees the result, not the instant
+acknowledgement). Per-viewer sync telemetry in the People tab.
