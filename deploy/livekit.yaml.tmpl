@@ -1,0 +1,98 @@
+# livekit-server config TEMPLATE.
+#
+# Rendered to ./livekit.yaml by oracle-setup.sh:
+#   envsubst '${DOMAIN} ${PUBLIC_IP} ${LIVEKIT_API_KEY} ${LIVEKIT_API_SECRET}' \
+#     < livekit.yaml.tmpl > livekit.yaml
+# Edit the template, re-render, then `docker compose restart livekit`.
+# livekit.yaml itself is generated (and contains the API secret) — keep it out
+# of git.
+
+# Signalling + Twirp HTTP API. Caddy proxies /rtc* and /twirp* here; the port is
+# bound on the host (network_mode: host), so do NOT open 7880 in the VCN or in
+# iptables — only Caddy needs to reach it, over loopback/host-gateway.
+port: 7880
+
+rtc:
+  # ICE/TCP fallback for viewers whose network blocks UDP entirely. Must be open
+  # in both the VCN security list and iptables.
+  tcp_port: 7881
+
+  # A single UDP *mux* port for all media, instead of the default ephemeral
+  # range. One port is far easier to punch through Oracle's VCN security lists
+  # and the instance firewall, uses fewer file descriptors, and a watch party of
+  # <20 participants nowhere near saturates a single socket.
+  udp_port: 7882
+
+  # Oracle Cloud gives an instance a *private* address (10.0.0.x) and 1:1-NATs a
+  # public IP onto it; the NIC never sees the public address. Left to itself the
+  # SFU would advertise 10.0.0.x in its ICE candidates and nobody could connect.
+  # use_external_ip lets it discover/advertise the public address, and node_ip
+  # pins it to the reserved IP so a STUN hiccup can never advertise the wrong
+  # one. Update PUBLIC_IP in .env and re-render if the IP ever changes.
+  use_external_ip: true
+  node_ip: ${PUBLIC_IP}
+
+  congestion_control:
+    enabled: true
+    # The movie is a single high-bitrate layer with no simulcast fallback (yet).
+    # With allow_pause: true the SFU responds to a congested viewer by pausing
+    # their video entirely — a black screen for the rest of the film. False makes
+    # it degrade/drop instead, which recovers on its own. Revisit once the
+    # projector publishes the second simulcast layer: then pausing a layer is a
+    # step-down rather than a blackout.
+    allow_pause: false
+
+# Embedded TURN server, for viewers behind symmetric NAT or UDP-blocking
+# firewalls (corporate networks, some hotel/mobile APs). TURN/TLS on 5349 looks
+# like ordinary HTTPS and gets through nearly everything.
+turn:
+  enabled: true
+  domain: turn.${DOMAIN}
+  tls_port: 5349
+  udp_port: 3478
+  # Relay allocations get a port from this range; it must match the UDP range
+  # opened in the VCN security list and iptables. 100 ports is plenty for a
+  # handful of relayed participants.
+  relay_range_start: 30000
+  relay_range_end: 30100
+
+  # Certificate path, reusing Caddy's Let's Encrypt cert for turn.${DOMAIN}:
+  #
+  #   Caddy stores its data under its data dir, which is /data inside the
+  #   official caddy image (the image sets XDG_DATA_HOME=/data). Certificates
+  #   land at  <data dir>/caddy/certificates/<issuer key>/<host>/<host>.crt
+  #   i.e.     /data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.${DOMAIN}/turn.${DOMAIN}.crt
+  #   inside the caddy container. The extra "caddy/" segment is Caddy's own
+  #   namespace inside the storage root — it is not a typo.
+  #
+  #   docker-compose mounts that same named volume (caddy_data) at /caddy in the
+  #   livekit container, so the storage root is /caddy and the path becomes
+  #   /caddy/caddy/certificates/...  — hence the doubled "caddy/caddy".
+  #
+  #   Verify after the first certificate is issued:
+  #     docker compose exec livekit ls /caddy/caddy/certificates/*/turn.${DOMAIN}/
+  #   If Let's Encrypt is ever swapped for ZeroSSL the issuer directory changes
+  #   (acme.zerossl.com-v2-dv90) and these two lines must change with it.
+  #
+  #   LiveKit reads the cert once at startup, so after each ~60-day renewal the
+  #   container needs a restart (see the cron job in README.md).
+  cert_file: /caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.${DOMAIN}/turn.${DOMAIN}.crt
+  key_file: /caddy/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.${DOMAIN}/turn.${DOMAIN}.key
+
+# The app server signs join tokens with this pair; nothing else has it.
+keys:
+  ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+
+room:
+  # Rooms are created explicitly by the app server (CreateRoom) when someone
+  # opens a party. With auto_create: true, anyone holding a valid token for an
+  # arbitrary room name could spin up rooms at will.
+  auto_create: false
+  # Seconds a room lingers with nobody in it before the SFU tears it down.
+  # 5 minutes survives "everyone reloads at once" and short projector restarts.
+  empty_timeout: 300
+  # Watch-party sized. Raise if you ever host something bigger.
+  max_participants: 16
+
+logging:
+  level: info

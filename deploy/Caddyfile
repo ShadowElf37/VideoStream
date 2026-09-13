@@ -1,0 +1,57 @@
+# VideoStream reverse proxy.
+#
+# $DOMAIN comes from the container environment (set in docker-compose.yml from
+# deploy/.env). Caddy obtains and renews Let's Encrypt certificates for both
+# site blocks automatically.
+
+{
+	# Uncomment and set ACME_EMAIL in .env (plus `ACME_EMAIL: ${ACME_EMAIL}` in
+	# the caddy service env) to get expiry warnings from Let's Encrypt.
+	# email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# HSTS. Drop or shorten while you are still testing DNS/TLS.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "SAMEORIGIN"
+		# The web app needs mic (voice chat) and, later, display capture.
+		Permissions-Policy "microphone=(self), camera=(self), display-capture=(self), autoplay=(self), geolocation=(), payment=()"
+		-Server
+		# Deliberately NO Content-Security-Policy: a naive CSP breaks WebRTC and
+		# the `blob:` media/worker URLs livekit-client creates. If you add one
+		# later it must at minimum allow `media-src 'self' blob:`,
+		# `worker-src 'self' blob:`, `connect-src 'self' wss: https:`.
+	}
+
+	# LiveKit's signalling WebSocket (/rtc) and its Twirp HTTP API (/twirp).
+	# Same origin as the app, so the browser never makes a cross-origin request.
+	# Caddy upgrades WebSockets transparently; no extra config needed.
+	@rtc path /rtc* /twirp*
+	handle @rtc {
+		reverse_proxy host.docker.internal:7880
+	}
+
+	# Optional: LiveKit Ingress WHIP endpoint (`ingress` profile).
+	# Uncomment together with `docker compose --profile ingress up -d`.
+	# @whip path /whip*
+	# handle @whip {
+	# 	reverse_proxy host.docker.internal:8085
+	# }
+
+	# Everything else: the app server (API + the built web bundle).
+	handle {
+		reverse_proxy app:8080
+	}
+}
+
+# A certificate for the TURN hostname. LiveKit's embedded TURN/TLS listener on
+# :5349 reads the cert files straight out of Caddy's data volume, so all this
+# site has to do is exist and pass the ACME challenge on :80/:443.
+turn.{$DOMAIN} {
+	respond 404
+}

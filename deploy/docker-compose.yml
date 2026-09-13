@@ -1,0 +1,104 @@
+# VideoStream — Oracle Cloud Ampere A1 (arm64, Ubuntu 24.04) deployment.
+#
+# Layout:
+#   caddy    — TLS terminator + reverse proxy. Bridge network, publishes 80/443.
+#   livekit  — the SFU. HOST network, so its UDP media ports are not NATed a
+#              second time by Docker (docker-proxy mangles the source address of
+#              UDP packets, which breaks ICE and the embedded TURN server).
+#   app      — our Go server. Bridge network only; Caddy reaches it as app:8080.
+#   redis + ingress — optional `ingress` profile (WHIP/RTMP screen share), off
+#              by default: `docker compose --profile ingress up -d`.
+#
+# Because livekit runs on the host network it is NOT reachable at `livekit:7880`
+# from the bridge network. Containers on the bridge reach it through the
+# host-gateway alias `host.docker.internal`, declared in `extra_hosts` below.
+
+services:
+  caddy:
+    image: caddy:2
+    container_name: videostream-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3 (QUIC)
+    environment:
+      # The Caddyfile refers to {$DOMAIN}; Caddy reads it from its own env.
+      # Deliberately not `env_file: .env` — Caddy has no business holding the
+      # LiveKit or session secrets.
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # ACME account + certificates (read-only-shared with livekit)
+      - caddy_config:/config
+    extra_hosts:
+      # Lets Caddy proxy /rtc* and /twirp* to LiveKit on the host network.
+      - "host.docker.internal:host-gateway"
+
+  livekit:
+    image: livekit/livekit-server:v1
+    container_name: videostream-livekit
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro # rendered from livekit.yaml.tmpl by oracle-setup.sh
+      # Caddy's certificate store, read-only, so the embedded TURN server can
+      # serve TURN/TLS on 5349 with the cert Caddy already obtained for
+      # turn.$DOMAIN. See livekit.yaml.tmpl for the exact path.
+      - caddy_data:/caddy:ro
+
+  app:
+    image: ghcr.io/shadowelf37/videostream-server:latest
+    # Build locally instead of pulling (useful before the first image is pushed):
+    # build:
+    #   context: ../server
+    container_name: videostream-app
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data # SQLite lives here; back this directory up
+    environment:
+      DB_PATH: /data/videostream.db
+      LISTEN: ":8080"
+      PUBLIC_URL: https://${DOMAIN}
+      # Browsers talk to LiveKit through Caddy on the public name…
+      LIVEKIT_URL: wss://${DOMAIN}
+      # …while the server's own Twirp calls (CreateRoom, SendData) go straight
+      # to LiveKit on the host, skipping TLS and the proxy hop.
+      LIVEKIT_API_URL: http://host.docker.internal:7880
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # No `ports:` — the app is only reachable through Caddy.
+
+  # ---------------------------------------------------------------------------
+  # Optional: LiveKit Ingress (WHIP / RTMP), e.g. OBS screen share from Linux.
+  # Enable with:  docker compose --profile ingress up -d
+  # Also needs the /whip* block in the Caddyfile and TCP 1935 + UDP 7885 open.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: videostream-redis
+    profiles: [ingress]
+    restart: unless-stopped
+    network_mode: host
+    # Bound to loopback: ingress and livekit are on the host network too, and
+    # an internet-exposed Redis is an immediate compromise.
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379"]
+
+  ingress:
+    image: livekit/ingress:v1
+    container_name: videostream-ingress
+    profiles: [ingress]
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - redis
+    environment:
+      INGRESS_CONFIG_FILE: /etc/ingress.yaml
+    volumes:
+      - ./ingress.yaml:/etc/ingress.yaml:ro # rendered from ingress.yaml.tmpl
+
+volumes:
+  caddy_data:
+  caddy_config:

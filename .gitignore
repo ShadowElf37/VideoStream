@@ -28,3 +28,5 @@ node_modules/
 .DS_Store
 /tmp/
 /scratch/
+testdata/*.mp4
+testdata/*.mkv
