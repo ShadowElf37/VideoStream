@@ -10,7 +10,9 @@ import { Button } from '@/ui/Button';
 import { Input } from '@/ui/Field';
 import { Tooltip } from '@/ui/Tooltip';
 
-const MEDIA_RE = /\.(mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|flv|mpg|mpeg|ogv|mp3|flac|m4a|ogg|opus|wav|aac)$/i;
+// `vsm` is the pre-encoded format the server-side projector plays; without it
+// pushed files are listed by the projector and then hidden by this filter.
+const MEDIA_RE = /\.(vsm|mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|flv|mpg|mpeg|ogv|mp3|flac|m4a|ogg|opus|wav|aac)$/i;
 
 export function QueueTab({ active }: { active: boolean }) {
   const role = useSession((s) => s.role);

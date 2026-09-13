@@ -15,6 +15,8 @@ var MediaExts = map[string]bool{
 	".mkv": true, ".mp4": true, ".webm": true, ".avi": true, ".mov": true,
 	".m4v": true, ".ts": true, ".mpg": true, ".wmv": true, ".flv": true,
 	".srt": true, ".ass": true, ".sub": true, ".vtt": true,
+	// Pre-encoded media for the server-side projector (see internal/vsm).
+	".vsm": true,
 }
 
 // NormalizeRoots turns the --media-root flags into absolute, symlink-resolved
