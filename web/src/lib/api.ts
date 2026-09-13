@@ -72,6 +72,19 @@ export const api = {
       session,
     }),
 
+  // The house projector: a projector running on the server itself, playing
+  // files pushed with vspush. Present only when the deployment configures one.
+  getHouseProjector: (id: string) =>
+    request<{ active: boolean; available: boolean; elsewhere: boolean }>(
+      `/api/rooms/${encodeURIComponent(id)}/projector`,
+    ),
+
+  setHouseProjector: (id: string, session: string, on: boolean) =>
+    request<{ active: boolean }>(`/api/rooms/${encodeURIComponent(id)}/projector`, {
+      method: on ? 'POST' : 'DELETE',
+      session,
+    }),
+
   patchSettings: (id: string, session: string, patch: Partial<RoomSettings>) =>
     request<RoomSettings>(`/api/rooms/${encodeURIComponent(id)}/settings`, {
       method: 'PATCH',

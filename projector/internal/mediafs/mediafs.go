@@ -1,4 +1,4 @@
-package control
+package mediafs
 
 import (
 	"fmt"

@@ -15,6 +15,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/ShadowElf37/VideoStream/projector/internal/encoder"
+	"github.com/ShadowElf37/VideoStream/projector/internal/mediafs"
 	"github.com/ShadowElf37/VideoStream/projector/internal/mpvhost"
 	"github.com/ShadowElf37/VideoStream/projector/internal/publish"
 	"github.com/ShadowElf37/VideoStream/proto"
@@ -249,7 +250,7 @@ func (c *Controller) virtual(name string, cmd []any) (any, error) {
 		return c.deps.State(), nil
 
 	case "vs/fs.list":
-		list, err := ListDir(c.deps.Roots, arg(cmd, 1))
+		list, err := mediafs.ListDir(c.deps.Roots, arg(cmd, 1))
 		if err != nil {
 			return nil, err
 		}
@@ -267,8 +268,8 @@ func (c *Controller) virtual(name string, cmd []any) (any, error) {
 		if mode != "replace" && mode != "append" && mode != "append-play" {
 			return nil, fmt.Errorf("vs/load: bad mode %q", mode)
 		}
-		if !IsURL(target) {
-			resolved, err := Resolve(c.deps.Roots, target)
+		if !mediafs.IsURL(target) {
+			resolved, err := mediafs.Resolve(c.deps.Roots, target)
 			if err != nil {
 				return nil, err
 			}

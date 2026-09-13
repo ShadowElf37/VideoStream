@@ -28,6 +28,7 @@ import (
 
 	"github.com/ShadowElf37/VideoStream/projector/internal/control"
 	"github.com/ShadowElf37/VideoStream/projector/internal/encoder"
+	"github.com/ShadowElf37/VideoStream/projector/internal/mediafs"
 	"github.com/ShadowElf37/VideoStream/projector/internal/mpvhost"
 	"github.com/ShadowElf37/VideoStream/projector/internal/publish"
 	"github.com/ShadowElf37/VideoStream/projector/internal/timeline"
@@ -134,7 +135,7 @@ func run(log *slog.Logger, o runOpts) error {
 	rootArgs := o.roots
 	if len(rootArgs) == 0 {
 		switch {
-		case o.file != "" && !control.IsURL(o.file):
+		case o.file != "" && !mediafs.IsURL(o.file):
 			rootArgs = []string{filepath.Dir(o.file)}
 		default:
 			if home, err := os.UserHomeDir(); err == nil {
@@ -142,7 +143,7 @@ func run(log *slog.Logger, o runOpts) error {
 			}
 		}
 	}
-	roots, err := control.NormalizeRoots(rootArgs)
+	roots, err := mediafs.NormalizeRoots(rootArgs)
 	if err != nil {
 		log.Warn("media roots", "err", err)
 	}
@@ -290,8 +291,8 @@ func run(log *slog.Logger, o runOpts) error {
 
 	if o.file != "" {
 		target := o.file
-		if !control.IsURL(target) {
-			if target, err = control.Resolve(roots, target); err != nil {
+		if !mediafs.IsURL(target) {
+			if target, err = mediafs.Resolve(roots, target); err != nil {
 				return err
 			}
 		}

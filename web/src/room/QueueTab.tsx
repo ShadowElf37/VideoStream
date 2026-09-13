@@ -1,6 +1,7 @@
-import { ChevronRight, Clapperboard, Folder, FolderUp, Globe, ListPlus, ListVideo, LoaderCircle, Play, Search } from 'lucide-react';
+import { ChevronRight, Clapperboard, Folder, FolderUp, Globe, ListPlus, ListVideo, LoaderCircle, Play, Search, Server } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useMpv, useMpvStore } from '@/host/useMpv';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatBytes } from '@/lib/format';
 import type { FsEntry, FsList } from '@/proto/messages';
@@ -22,8 +23,38 @@ export function QueueTab({ active }: { active: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [url, setUrl] = useState('');
+  const [house, setHouse] = useState<{ active: boolean; available: boolean; elsewhere: boolean } | null>(null);
+  const [houseBusy, setHouseBusy] = useState(false);
 
   const isHost = role === 'host';
+  const roomId = useSession((s) => s.roomId);
+
+  // Whether this deployment even has a server-side projector is a property of
+  // the server, not of the client, so ask rather than assume.
+  useEffect(() => {
+    if (!active || !isHost || !roomId) return;
+    void api
+      .getHouseProjector(roomId)
+      .then(setHouse)
+      .catch(() => setHouse(null));
+  }, [active, isHost, roomId, online]);
+
+  const toggleHouse = async (on: boolean) => {
+    const session = useSession.getState().token?.session;
+    if (!session || !roomId) return;
+    setHouseBusy(true);
+    try {
+      await api.setHouseProjector(roomId, session, on);
+      setHouse(await api.getHouseProjector(roomId));
+      useSession
+        .getState()
+        .toast(on ? 'Server projector joining…' : 'Server projector released', 'info', 3000);
+    } catch (e) {
+      useSession.getState().toast(e instanceof Error ? e.message : String(e), 'error');
+    } finally {
+      setHouseBusy(false);
+    }
+  };
 
   const browse = async (path: string) => {
     setLoading(true);
@@ -107,6 +138,15 @@ export function QueueTab({ active }: { active: boolean }) {
             Open
           </Button>
         </form>
+        {house?.active && (
+          <div className="flex items-center gap-2 text-[12px] text-muted">
+            <Server className="size-3.5 shrink-0 text-accent" />
+            <span className="flex-1">Streaming from the server</span>
+            <button className="underline hover:text-text" disabled={houseBusy} onClick={() => void toggleHouse(false)}>
+              release
+            </button>
+          </div>
+        )}
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted" />
           <Input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter this folder" className="pl-8 h-9" aria-label="Filter files" />
@@ -130,7 +170,18 @@ export function QueueTab({ active }: { active: boolean }) {
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-1">
-        {!online && <div className="p-4 text-sm text-muted text-center">Projector is offline. Start it to browse files.</div>}
+        {!online && (
+          <div className="p-4 text-sm text-muted text-center space-y-3">
+            <p>Projector is offline.</p>
+            {house?.available && !house.elsewhere && (
+              <Button size="sm" variant="primary" disabled={houseBusy} onClick={() => void toggleHouse(true)}>
+                <Server className="size-4" /> Use the server projector
+              </Button>
+            )}
+            {house?.elsewhere && <p className="text-[12px]">The server projector is busy in another room.</p>}
+            {!house?.available && <p className="text-[12px]">Start the projector on the machine with the files.</p>}
+          </div>
+        )}
         {error && (
           <div className="m-2 p-3 rounded-xl bg-danger/10 border border-danger/30 text-danger text-[13px]">
             {error}

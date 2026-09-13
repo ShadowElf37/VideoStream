@@ -19,6 +19,7 @@ type Server struct {
 	chat     *chat.Service
 	lkClient *lksdk.RoomServiceClient
 	logger   *slog.Logger
+	house    houseState
 }
 
 // NewServer wires up a Server with its dependencies.
@@ -42,6 +43,13 @@ func (s *Server) Routes(spa http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/rooms/{id}/chat", s.requireSession(s.handleGetChat))
 	mux.HandleFunc("POST /api/rooms/{id}/chat", s.requireSession(s.handlePostChat))
 	mux.HandleFunc("PATCH /api/rooms/{id}/settings", s.requireSession(s.handlePatchSettings))
+
+	// The house projector: polled by the projector service itself, and
+	// switched on and off by the room's host.
+	mux.HandleFunc("GET /api/house/assignment", s.handleHouseAssignment)
+	mux.HandleFunc("GET /api/rooms/{id}/projector", s.handleGetHouseProjector)
+	mux.HandleFunc("POST /api/rooms/{id}/projector", s.requireSession(s.handleSetHouseProjector))
+	mux.HandleFunc("DELETE /api/rooms/{id}/projector", s.requireSession(s.handleSetHouseProjector))
 
 	if spa != nil {
 		mux.Handle("/", spa)

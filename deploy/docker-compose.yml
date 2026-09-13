@@ -77,9 +77,47 @@ services:
       # …while the server's own Twirp calls (CreateRoom, SendData) go straight
       # to LiveKit on the host, skipping TLS and the proxy hop.
       LIVEKIT_API_URL: http://host.docker.internal:7880
+      # Shared with the house service below; empty disables the feature and
+      # the web UI stops offering it.
+      HOUSE_SECRET: ${HOUSE_SECRET:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # No `ports:` — the app is only reachable through Caddy.
+
+  # ---------------------------------------------------------------------------
+  # The house projector: streams files pushed with `vspush` from this machine,
+  # so a party does not depend on anyone's home uplink and nobody has to start
+  # a binary by hand.
+  #
+  # It cannot encode and does not try to: this box has no GPU and software
+  # x264 manages 0.35x real time at 1080p. Everything is encoded before it is
+  # pushed (see projector/internal/vsm), so this service only reads, paces and
+  # packetizes — a static binary with no media libraries at all.
+  #
+  # Disabled unless HOUSE_SECRET is set in .env:
+  #   docker compose --profile house up -d
+  # ---------------------------------------------------------------------------
+  house:
+    image: videostream-house:local
+    build:
+      context: ..
+      dockerfile: projector/Dockerfile.house
+    container_name: videostream-house
+    profiles: [house]
+    restart: unless-stopped
+    command:
+      - "--server=http://app:8080"
+      - "--media=/media"
+    environment:
+      HOUSE_SECRET: ${HOUSE_SECRET:?set HOUSE_SECRET in deploy/.env to run the house projector}
+    volumes:
+      # Pushed media. Read-only: the projector plays what is here and has no
+      # business changing it.
+      - ./media:/media:ro
+    depends_on:
+      - app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # ---------------------------------------------------------------------------
   # Optional: LiveKit Ingress (WHIP / RTMP), e.g. OBS screen share from Linux.

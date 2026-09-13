@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+#
+# The server-side ("house") projector. Build from the REPOSITORY ROOT:
+#   docker build -f projector/Dockerfile.house -t videostream-house .
+#
+# Note what is absent: no libmpv, no libopus, no ffmpeg. The house projector
+# only reads pre-encoded .vsm files and paces them onto the wire, so it needs
+# none of the decoding or encoding machinery the desktop projector links
+# against — which is why it can be CGO_ENABLED=0 and land on distroless.
+
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS build
+ARG TARGETARCH
+WORKDIR /src
+
+COPY proto/ ../proto/
+COPY projector/go.mod projector/go.sum ./
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
+
+COPY projector/ ./
+RUN --mount=type=cache,target=/root/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/houseprojector ./cmd/houseprojector
+
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+WORKDIR /app
+COPY --from=build /out/houseprojector /app/houseprojector
+VOLUME ["/media"]
+ENTRYPOINT ["/app/houseprojector"]

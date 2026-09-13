@@ -41,7 +41,10 @@ func (b *stubBroadcaster) Broadcast(_ context.Context, roomID, topic string, pay
 	return nil
 }
 
-func newTestServer(t *testing.T) (http.Handler, *stubBroadcaster) {
+// newTestServer returns the handler, the broadcaster its chat writes to, and
+// the Server itself, which tests need in order to vary configuration that is
+// read at request time rather than at construction.
+func newTestServer(t *testing.T) (http.Handler, *stubBroadcaster, *Server) {
 	t.Helper()
 
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -69,7 +72,7 @@ func newTestServer(t *testing.T) (http.Handler, *stubBroadcaster) {
 	logger := slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	srv := NewServer(cfg, roomsSvc, chatSvc, lkClient, logger)
 
-	return srv.Routes(nil), broadcaster
+	return srv.Routes(nil), broadcaster, srv
 }
 
 type testWriter struct{ t *testing.T }
@@ -109,7 +112,7 @@ func decodeBody(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 }
 
 func TestFullRoomFlow(t *testing.T) {
-	handler, broadcaster := newTestServer(t)
+	handler, broadcaster, _ := newTestServer(t)
 
 	// Create a room with a password.
 	createRec := doJSON(t, handler, http.MethodPost, "/api/rooms", proto.CreateRoomRequest{
@@ -280,7 +283,7 @@ func TestFullRoomFlow(t *testing.T) {
 }
 
 func TestHealthz(t *testing.T) {
-	handler, _ := newTestServer(t)
+	handler, _, _ := newTestServer(t)
 	rec := doJSON(t, handler, http.MethodGet, "/healthz", nil, "")
 	if rec.Code != http.StatusOK || rec.Body.String() != "ok" {
 		t.Fatalf("healthz: status %d, body %q", rec.Code, rec.Body.String())
