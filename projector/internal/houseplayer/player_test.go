@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -85,7 +86,7 @@ func newPlayer(t *testing.T) (*Player, *capture) {
 // never accumulated, or a long film drifts.
 func TestTimestampsAreAbsoluteAndMonotonic(t *testing.T) {
 	p, cap := newPlayer(t)
-	if err := p.Load(build(t, 3)); err != nil {
+	if err := p.Load(build(t, 3), "replace"); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
@@ -116,7 +117,7 @@ func TestTimestampsAreAbsoluteAndMonotonic(t *testing.T) {
 // other than ~1x means the pacing maths is wrong.
 func TestPlaysAtRealTime(t *testing.T) {
 	p, cap := newPlayer(t)
-	if err := p.Load(build(t, 5)); err != nil {
+	if err := p.Load(build(t, 5), "replace"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -135,7 +136,7 @@ func TestPlaysAtRealTime(t *testing.T) {
 
 func TestPauseStopsOutput(t *testing.T) {
 	p, cap := newPlayer(t)
-	if err := p.Load(build(t, 5)); err != nil {
+	if err := p.Load(build(t, 5), "replace"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -168,7 +169,7 @@ func TestPauseStopsOutput(t *testing.T) {
 // the decoder has no reference frame.
 func TestSeekLandsOnKeyframeAndKeepsTimestampsOrdered(t *testing.T) {
 	p, cap := newPlayer(t)
-	if err := p.Load(build(t, 10)); err != nil {
+	if err := p.Load(build(t, 10), "replace"); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -195,7 +196,7 @@ func TestSeekLandsOnKeyframeAndKeepsTimestampsOrdered(t *testing.T) {
 
 func TestStopGoesIdle(t *testing.T) {
 	p, _ := newPlayer(t)
-	if err := p.Load(build(t, 2)); err != nil {
+	if err := p.Load(build(t, 2), "replace"); err != nil {
 		t.Fatal(err)
 	}
 	if p.State().Idle {
@@ -204,5 +205,112 @@ func TestStopGoesIdle(t *testing.T) {
 	p.Stop()
 	if !p.State().Idle {
 		t.Error("not idle after Stop")
+	}
+}
+
+// "append" is the add-to-playlist button. Treating it as "replace" cuts the
+// current episode off mid-scene, which is exactly what it did.
+func TestAppendQueuesInsteadOfInterrupting(t *testing.T) {
+	p, cap := newPlayer(t)
+	first := build(t, 4)
+	second := build(t, 4)
+	if err := p.Load(first, "replace"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	time.Sleep(200 * time.Millisecond)
+	if err := p.Load(second, "append"); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	if got := p.State().Path; got != first {
+		t.Errorf("playing %q after an append; want the first file to keep playing", got)
+	}
+	if q := p.Playlist(); len(q) != 1 || q[0] != second {
+		t.Errorf("playlist = %v, want exactly the appended file", q)
+	}
+	// Tracks must not be republished per file, or viewers lose the stream
+	// between episodes.
+	if cap.tracks != 1 {
+		t.Errorf("PublishTracks called %d times, want 1", cap.tracks)
+	}
+}
+
+func TestAppendOnIdlePlayerStartsPlaying(t *testing.T) {
+	p, _ := newPlayer(t)
+	path := build(t, 2)
+	if err := p.Load(path, "append"); err != nil {
+		t.Fatal(err)
+	}
+	if st := p.State(); st.Idle || st.Path != path {
+		t.Errorf("append on an idle player did not start it: %+v", st)
+	}
+	if q := p.Playlist(); len(q) != 0 {
+		t.Errorf("playlist = %v, want empty once it started playing", q)
+	}
+}
+
+// The credits ending is when the next episode should start, not when playback
+// should stop.
+func TestPlaylistAdvancesAtEndOfFile(t *testing.T) {
+	p, cap := newPlayer(t)
+	first := build(t, 1) // one second, so the end arrives quickly
+	second := build(t, 4)
+	if err := p.Load(first, "replace"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Load(second, "append"); err != nil {
+		t.Fatal(err)
+	}
+	var advanced string
+	p.OnAdvance = func(title string) { advanced = title }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+	time.Sleep(1800 * time.Millisecond)
+
+	st := p.State()
+	if st.Path != second {
+		t.Errorf("playing %q at the end of the first file; want it to advance to the second", st.Path)
+	}
+	if st.Paused {
+		t.Error("paused after advancing; the next item should just play")
+	}
+	if advanced == "" {
+		t.Error("OnAdvance was not called, so the room is never told what started")
+	}
+	if cap.tracks != 1 {
+		t.Errorf("PublishTracks called %d times across the advance, want 1", cap.tracks)
+	}
+}
+
+func TestRejectsUnknownLoadMode(t *testing.T) {
+	p, _ := newPlayer(t)
+	if err := p.Load(build(t, 1), "sideways"); err == nil {
+		t.Error("an unknown load mode should be reported, not silently treated as replace")
+	}
+}
+
+func TestAppendRejectsUnplayableFile(t *testing.T) {
+	p, _ := newPlayer(t)
+	if err := p.Load(build(t, 1), "replace"); err != nil {
+		t.Fatal(err)
+	}
+	// A bad file must fail now, while the host is looking at the Queue tab,
+	// not twenty minutes later when the current episode ends.
+	bad := filepath.Join(t.TempDir(), "broken.vsm")
+	if err := os.WriteFile(bad, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Load(bad, "append"); err == nil {
+		t.Error("appending an unplayable file was accepted")
+	}
+	if q := p.Playlist(); len(q) != 0 {
+		t.Errorf("playlist = %v, want the bad file rejected", q)
 	}
 }

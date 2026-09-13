@@ -187,6 +187,8 @@ func (a *agent) session(ctx context.Context, as assignment) error {
 
 	player := houseplayer.New(a.log, pub)
 	ctl = houseplayer.NewController(a.log, player, &transport{pub}, a.roots, settings.AnyoneCanPause)
+	// When the playlist rolls on by itself, tell the room what started.
+	player.OnAdvance = ctl.AnnounceLoaded
 
 	go player.Run(ctx)
 	go ctl.BroadcastLoop(ctx)

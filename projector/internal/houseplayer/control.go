@@ -249,11 +249,20 @@ func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {
 			rep.Error = err.Error()
 			return rep
 		}
-		if err := c.player.Load(resolved); err != nil {
+		mode := str(cmd.Cmd, 2)
+		if mode == "" {
+			mode = "replace"
+		}
+		before := c.player.State().Path
+		if err := c.player.Load(resolved, mode); err != nil {
 			rep.Error = err.Error()
 			return rep
 		}
-		c.event("file-loaded", c.player.State().Header.Title)
+		// "append" behind something already playing changes nothing visible,
+		// so only announce an actual switch.
+		if st := c.player.State(); st.Path != before {
+			c.event("file-loaded", st.Header.Title)
+		}
 		rep.OK = true
 
 	case "cycle":
@@ -307,6 +316,10 @@ func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {
 	}
 	return rep
 }
+
+// AnnounceLoaded broadcasts a file-loaded event, for playlist advances that
+// no command asked for.
+func (c *Controller) AnnounceLoaded(title string) { c.event("file-loaded", title) }
 
 func (c *Controller) pauseEvent(paused bool) {
 	if paused {

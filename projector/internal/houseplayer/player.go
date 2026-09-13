@@ -49,6 +49,18 @@ type Player struct {
 	seekTo     int64 // -1 when no seek is pending
 	generation int
 
+	// queue is the playlist: what plays when the current file ends.
+	queue []string
+
+	// Size the tracks were published at. PublishTracks creates fresh tracks
+	// every call, so calling it per file would tear the viewer's subscription
+	// down between episodes; only a genuine resolution change needs it.
+	pubW, pubH int
+
+	// OnAdvance is called when the playlist moves on by itself, so the
+	// controller can tell the room what is playing now.
+	OnAdvance func(title string)
+
 	wake chan struct{}
 }
 
@@ -81,17 +93,93 @@ func (p *Player) State() State {
 	}
 }
 
-// Load opens path and starts playing it from the beginning, replacing
-// whatever was playing.
-func (p *Player) Load(path string) error {
+// Load handles the three mpv load modes the Queue tab uses.
+//
+//	replace      play it now, discarding the playlist
+//	append       queue it behind whatever is playing
+//	append-play  queue it and jump to it
+//
+// The mode is not decoration: "append" is the add-to-playlist button, and
+// treating it as "replace" cuts the film off mid-scene.
+func (p *Player) Load(path, mode string) error {
+	switch mode {
+	case "", "replace":
+		p.mu.Lock()
+		p.queue = nil
+		p.mu.Unlock()
+		return p.playFile(path)
+
+	case "append":
+		// Validate now rather than at the end of the current episode: a
+		// corrupt or missing file should be reported while the host is still
+		// looking at the Queue tab.
+		if err := checkPlayable(path); err != nil {
+			return err
+		}
+		p.mu.Lock()
+		idle := p.cur == nil
+		p.queue = append(p.queue, path)
+		n := len(p.queue)
+		p.mu.Unlock()
+		if idle {
+			return p.playNext()
+		}
+		p.log.Info("house: queued", "path", path, "queued", n)
+		return nil
+
+	case "append-play":
+		return p.playFile(path)
+	}
+	return fmt.Errorf("unknown load mode %q", mode)
+}
+
+// checkPlayable confirms a file parses as a .vsm without disturbing playback.
+func checkPlayable(path string) error {
+	r, err := vsm.Open(path)
+	if err != nil {
+		return err
+	}
+	return r.Close()
+}
+
+// Playlist returns what is queued behind the current file.
+func (p *Player) Playlist() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.queue...)
+}
+
+// playNext starts the head of the queue. It reports false when the queue is
+// empty.
+func (p *Player) playNext() error {
+	p.mu.Lock()
+	if len(p.queue) == 0 {
+		p.mu.Unlock()
+		return nil
+	}
+	next := p.queue[0]
+	p.queue = p.queue[1:]
+	p.mu.Unlock()
+	return p.playFile(next)
+}
+
+// playFile switches to path immediately, leaving the queue alone.
+func (p *Player) playFile(path string) error {
 	r, err := vsm.Open(path)
 	if err != nil {
 		return err
 	}
 	hdr := r.Header()
-	if err := p.sink.PublishTracks(hdr.Width, hdr.Height); err != nil {
-		r.Close()
-		return fmt.Errorf("publishing tracks: %w", err)
+	// Only (re)publish when the geometry actually changes. Republishing
+	// per file would drop every viewer's subscription between episodes.
+	p.mu.Lock()
+	needPublish := hdr.Width != p.pubW || hdr.Height != p.pubH
+	p.mu.Unlock()
+	if needPublish {
+		if err := p.sink.PublishTracks(hdr.Width, hdr.Height); err != nil {
+			r.Close()
+			return fmt.Errorf("publishing tracks: %w", err)
+		}
 	}
 	p.mu.Lock()
 	if p.cur != nil {
@@ -99,12 +187,14 @@ func (p *Player) Load(path string) error {
 	}
 	p.cur, p.hdr, p.path = r, hdr, path
 	p.paused, p.posMS, p.seekTo = false, 0, -1
+	p.pubW, p.pubH = hdr.Width, hdr.Height
 	p.generation++
 	p.mu.Unlock()
 	p.nudge()
-	p.log.Info("house: loaded", "title", hdr.Title, "path", path,
+	p.log.Info("house: playing", "title", hdr.Title, "path", path,
 		"size", fmt.Sprintf("%dx%d", hdr.Width, hdr.Height),
-		"duration", time.Duration(hdr.DurationMS)*time.Millisecond)
+		"duration", time.Duration(hdr.DurationMS)*time.Millisecond,
+		"republished", needPublish)
 	return nil
 }
 
@@ -151,6 +241,7 @@ func (p *Player) Stop() {
 		p.cur = nil
 	}
 	p.path, p.posMS = "", 0
+	p.queue = nil
 	p.generation++
 	p.mu.Unlock()
 	p.nudge()
@@ -234,6 +325,23 @@ func (p *Player) playOne(ctx context.Context) bool {
 				p.log.Info("house: end of file", "title", hdr.Title)
 			} else {
 				p.log.Warn("house: read failed", "err", err)
+			}
+			// Move on to whatever is queued; the credits finishing is exactly
+			// when the next episode should start.
+			p.mu.Lock()
+			stale := p.generation != gen || p.cur != r
+			queued := len(p.queue) > 0
+			p.mu.Unlock()
+			if stale {
+				return true
+			}
+			if queued {
+				if err := p.playNext(); err != nil {
+					p.log.Warn("house: could not start the next item", "err", err)
+				} else if p.OnAdvance != nil {
+					p.OnAdvance(p.State().Header.Title)
+				}
+				return true
 			}
 			p.mu.Lock()
 			if p.generation == gen && p.cur == r {
