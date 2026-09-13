@@ -52,7 +52,6 @@ type opts struct {
 	height  int
 	gopSecs float64
 	dest    string
-	format  string
 	ffmpeg  string
 	ffprobe string
 }
@@ -63,14 +62,13 @@ func main() {
 	var o opts
 	flag.StringVar(&o.out, "out", "", "output title directory (default: alongside the source)")
 	flag.StringVar(&o.title, "title", "", "title viewers see (default: the source file name)")
-	flag.IntVar(&o.aid, "aid", 0, "mpv audio track to keep, 1-based (0 = mpv's default)")
-	flag.IntVar(&o.sid, "sid", 0, "mpv subtitle track to burn in, 1-based (0 = none)")
+	flag.IntVar(&o.aid, "aid", 0, "audio track to keep, 1-based as in `mpv --list-tracks` (0 = the first)")
+	flag.IntVar(&o.sid, "sid", 0, "subtitle track to burn in, 1-based as in `mpv --list-tracks` (0 = none)")
 	flag.IntVar(&o.kbps, "bitrate", 5000, "target video bitrate in kbps")
 	flag.IntVar(&o.akbps, "audio-bitrate", 192, "audio bitrate in kbps; 192 is effectively transparent for music, 96 is plenty for speech")
 	flag.IntVar(&o.height, "height", 0, "scale to this height, preserving aspect (0 = keep source)")
 	flag.Float64Var(&o.gopSecs, "gop", 2, "seconds between keyframes; also the seek granularity and a late joiner's wait")
 	flag.StringVar(&o.dest, "dest", "", "scp destination for the finished title, e.g. user@host:/srv/media")
-	flag.StringVar(&o.format, "format", "mp4", "output format: mp4 (played by the browser directly) or vsm (legacy RTP projector)")
 	flag.StringVar(&o.ffmpeg, "ffmpeg", "ffmpeg", "ffmpeg binary")
 	flag.StringVar(&o.ffprobe, "ffprobe", "ffprobe", "ffprobe binary")
 	flag.Parse()
@@ -108,14 +106,7 @@ func run(ctx context.Context, log *slog.Logger, o opts) error {
 	}
 	id := sanitize(o.title)
 	if o.out == "" {
-		if o.format == "mp4" {
-			o.out = filepath.Join(filepath.Dir(abs), id)
-		} else {
-			o.out = filepath.Join(filepath.Dir(abs), id+".vsm")
-		}
-	}
-	if o.format != "mp4" && o.format != "vsm" {
-		return fmt.Errorf("unknown --format %q (want mp4 or vsm)", o.format)
+		o.out = filepath.Join(filepath.Dir(abs), id)
 	}
 
 	start := time.Now()
