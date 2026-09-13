@@ -104,7 +104,7 @@ export function Stage({
         stageRef.current?.focus({ preventScroll: true });
       }}
     >
-      <MovieVideo track={movie.video} onStalled={onStalled} videoRef={videoRef} />
+      <MovieVideo track={movie.video} paused={paused} onStalled={onStalled} videoRef={videoRef} />
 
       {!hasMovie && <WaitingState projectorOnline={projectorOnline} />}
       {hasMovie && paused && !stalled && <PausedGlyph />}

@@ -47,13 +47,11 @@ export const DEFAULT_PREFS: Prefs = {
   deafenImpliesMute: false,
   ptt: false,
   duckDb: 0,
-  // The receive buffer, and therefore how late every reaction looks: the
-  // picture on screen is this far behind the projector, so at 1.5s a pause
-  // took a second and a half to appear to have done anything (measured:
-  // 1555 ms, 37 frames after the click). 0.5s still absorbs far more jitter
-  // than WebRTC's ~50 ms default and makes the controls feel connected to
-  // the film. Raise it in Settings if a viewer stutters.
-  smoothnessSec: 0.5,
+  // The receive buffer. It is deliberately large: it is what rides out shaky
+  // Wi-Fi. Control latency is NOT solved by shrinking it — clients act on the
+  // pause command directly instead, so a deep buffer costs nothing in
+  // responsiveness.
+  smoothnessSec: 1.5,
   qualityPref: 'auto',
   statsOverlay: false,
   theme: 'dark',
