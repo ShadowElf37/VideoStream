@@ -1,0 +1,29 @@
+# Local development config for livekit-server (brew install livekit).
+#
+#   livekit-server --config deploy/dev/livekit-dev.yaml
+#
+# Everything here is intentionally insecure and localhost-only. Never deploy it.
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  # Localhost only: no NAT to traverse, and leaving this on makes startup slow
+  # (and can advertise your laptop's real public IP to the room).
+  use_external_ip: false
+
+# The well-known dev pair. The server and projector use the same values:
+#   LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret
+keys:
+  devkey: secret
+
+room:
+  # Convenient locally: `lk room join` can conjure a room without the app server
+  # having created it first.
+  auto_create: true
+
+logging:
+  level: info
+
+# No TURN: on localhost there is nothing to relay.

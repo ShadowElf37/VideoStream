@@ -30,3 +30,7 @@ node_modules/
 /scratch/
 testdata/*.mp4
 testdata/*.mkv
+
+# generated from templates by deploy/oracle-setup.sh (contain secrets)
+/deploy/livekit.yaml
+/deploy/ingress.yaml

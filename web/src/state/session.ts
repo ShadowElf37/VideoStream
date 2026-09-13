@@ -48,7 +48,7 @@ interface SessionStore {
   toast: (text: string, kind?: Toast['kind'], ttl?: number) => void;
   dismissToast: (id: number) => void;
   addReaction: (emoji: string, from: string) => void;
-  pruneReactions: (before: number) => void;
+  removeReaction: (id: number) => void;
   setFullscreen: (v: boolean) => void;
   setAudioBlocked: (v: boolean) => void;
   reset: () => void;
@@ -89,7 +89,7 @@ export const useSession = create<SessionStore>()((set) => ({
     set((s) => ({
       reactions: [...s.reactions.slice(-24), { id: seq++, emoji, from, x: 8 + Math.random() * 84 }],
     })),
-  pruneReactions: (before) => set((s) => ({ reactions: s.reactions.filter((r) => r.id >= before) })),
+  removeReaction: (id) => set((s) => ({ reactions: s.reactions.filter((r) => r.id !== id) })),
   setFullscreen: (isFullscreen) => set({ isFullscreen }),
   setAudioBlocked: (audioBlocked) => set({ audioBlocked }),
   reset: () =>
