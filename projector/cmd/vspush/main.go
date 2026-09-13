@@ -42,6 +42,7 @@ import (
 
 	"github.com/ShadowElf37/VideoStream/projector/internal/encoder"
 	"github.com/ShadowElf37/VideoStream/projector/internal/vsm"
+	"github.com/ShadowElf37/VideoStream/proto"
 )
 
 type opts struct {
@@ -55,6 +56,7 @@ type opts struct {
 	height  int
 	gopSecs float64
 	dest    string
+	format  string
 	mpv     string
 	ffmpeg  string
 	ffprobe string
@@ -73,7 +75,8 @@ func main() {
 	flag.IntVar(&o.akbps, "audio-bitrate", 192, "audio bitrate in kbps; 192 is effectively transparent for music, 96 is plenty for speech")
 	flag.IntVar(&o.height, "height", 0, "scale to this height, preserving aspect (0 = keep source)")
 	flag.Float64Var(&o.gopSecs, "gop", 2, "seconds between keyframes; also the seek granularity and a late joiner's wait")
-	flag.StringVar(&o.dest, "dest", "", "scp destination for the finished file, e.g. user@host:/srv/media")
+	flag.StringVar(&o.dest, "dest", "", "scp destination for the finished title, e.g. user@host:/srv/media")
+	flag.StringVar(&o.format, "format", "mp4", "output format: mp4 (played by the browser directly) or vsm (legacy RTP projector)")
 	flag.StringVar(&o.mpv, "mpv", "mpv", "mpv binary")
 	flag.StringVar(&o.ffmpeg, "ffmpeg", "ffmpeg", "ffmpeg binary")
 	flag.StringVar(&o.ffprobe, "ffprobe", "ffprobe", "ffprobe binary")
@@ -111,8 +114,16 @@ func run(ctx context.Context, log *slog.Logger, o opts) error {
 	if o.title == "" {
 		o.title = strings.TrimSuffix(filepath.Base(abs), filepath.Ext(abs))
 	}
+	id := sanitize(o.title)
 	if o.out == "" {
-		o.out = filepath.Join(filepath.Dir(abs), sanitize(o.title)+".vsm")
+		if o.format == "mp4" {
+			o.out = filepath.Join(filepath.Dir(abs), id)
+		} else {
+			o.out = filepath.Join(filepath.Dir(abs), id+".vsm")
+		}
+	}
+	if o.format != "mp4" && o.format != "vsm" {
+		return fmt.Errorf("unknown --format %q (want mp4 or vsm)", o.format)
 	}
 
 	work, err := os.MkdirTemp("", "vspush-*")
@@ -138,6 +149,13 @@ func run(ctx context.Context, log *slog.Logger, o opts) error {
 	log.Info("source", "size", fmt.Sprintf("%dx%d", src.Width, src.Height),
 		"fps", fmt.Sprintf("%.3f", fps),
 		"duration", time.Duration(src.DurationMS)*time.Millisecond)
+
+	if o.format == "mp4" {
+		// One pass, straight to what the browser plays. The .vsm path needs a
+		// second packing step only because RTP wants pre-split access units;
+		// a file needs no such preparation.
+		return buildMP4(ctx, log, o, abs, id, fps, start)
+	}
 
 	if err := transcode(ctx, log, o, abs, mkv, fps); err != nil {
 		return fmt.Errorf("transcode: %w", err)
@@ -501,7 +519,7 @@ func readAccessUnits(r io.Reader, out chan<- vItem) error {
 
 func upload(ctx context.Context, log *slog.Logger, path, dest string) error {
 	log.Info("uploading", "dest", dest)
-	cmd := exec.CommandContext(ctx, "scp", "-q", path, dest)
+	cmd := exec.CommandContext(ctx, "scp", "-q", "-r", path, dest)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -524,4 +542,231 @@ func sanitize(s string) string {
 		return "media"
 	}
 	return out
+}
+
+// buildMP4 produces a title directory the app server can serve directly:
+// movie.mp4 plus meta.json. This is the primary path.
+//
+// It is one mpv pass and nothing else. The .vsm path needs a second step to
+// split the stream into RTP-sized access units; a file the browser fetches
+// needs no preparation beyond being a well-formed MP4 with its index at the
+// front.
+func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps float64, start time.Time) error {
+	dir := o.out
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	movie := filepath.Join(dir, proto.MovieFileName)
+
+	if err := transcodeMP4(ctx, log, o, src, movie, fps); err != nil {
+		return fmt.Errorf("transcode: %w", err)
+	}
+	log.Info("transcode done", "took", time.Since(start).Round(time.Second))
+
+	probe, err := probeMKV(ctx, o.ffprobe, movie)
+	if err != nil {
+		return fmt.Errorf("probing the encoded file: %w", err)
+	}
+	st, err := os.Stat(movie)
+	if err != nil {
+		return err
+	}
+	chapters, err := probeChapters(ctx, o.ffprobe, src)
+	if err != nil {
+		// Chapters are a convenience; a source without them is normal and a
+		// probe that fails should not lose the encode.
+		log.Warn("could not read chapters", "err", err)
+	}
+
+	meta := proto.MediaMeta{
+		ID: id, Title: o.title, Source: filepath.Base(src),
+		DurationMS: probe.DurationMS,
+		Width:      probe.Width, Height: probe.Height,
+		FPSNum: probe.FPSNum, FPSDen: probe.FPSDen,
+		VideoCodec: "h264", AudioCodec: "aac",
+		SizeBytes:  st.Size(),
+		AudioTrack: o.aid, SubTrack: o.sid,
+		Chapters: chapters,
+		PushedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	blob, err := json.MarshalIndent(&meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, proto.MetaFileName), append(blob, '\n'), 0o644); err != nil {
+		return err
+	}
+
+	log.Info("built", "id", id, "path", dir,
+		"size", fmt.Sprintf("%.1f MiB", float64(st.Size())/(1<<20)),
+		"duration", time.Duration(meta.DurationMS)*time.Millisecond,
+		"chapters", len(chapters),
+		"kbps", int(float64(st.Size())*8/(float64(meta.DurationMS)/1000)/1000))
+
+	if o.dest != "" {
+		if err := upload(ctx, log, dir, o.dest); err != nil {
+			return fmt.Errorf("upload: %w", err)
+		}
+	}
+	log.Info("done", "total", time.Since(start).Round(time.Second))
+	return nil
+}
+
+// transcodeMP4 renders subtitles and encodes straight to a browser-playable
+// MP4, in one ffmpeg pass.
+//
+// ffmpeg rather than mpv, which the .vsm path uses, for one concrete reason:
+// B-frames. They are legal for a file — the ban existed only because browser
+// H.264 over RTP assumes decode order equals display order — but mpv's
+// encoding path cannot mux reordered frames, failing with
+// "pts (984) < dts (2016) ... Writing packet failed". ffmpeg muxes them
+// correctly at the same 8x real time, and using one tool instead of two is
+// simpler besides.
+//
+// This needs an ffmpeg built with libass (Homebrew's `ffmpeg-full`, not the
+// slim `ffmpeg`); findSubtitleFFmpeg locates one and says so plainly if there
+// is none, because the failure is otherwise "No such filter: 'subtitles'"
+// twenty minutes in.
+//
+// Two codec choices that only became available by leaving RTP behind:
+// AAC-LC instead of Opus (Opus in MP4 is not reliably supported across Safari
+// and older MSE), and High profile instead of Main advertised as constrained
+// baseline.
+func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string, fps float64) error {
+	ff, err := findSubtitleFFmpeg(o.ffmpeg)
+	if err != nil {
+		return err
+	}
+	gopFrames := int(o.gopSecs*fps + 0.5)
+	if gopFrames < 1 {
+		gopFrames = 48
+	}
+
+	// The subtitles filter takes a filename inside a filter-argument string,
+	// where ':', ',', '[' and '\' all mean something. Real filenames are full
+	// of them. Linking the source to a plain name in a scratch directory
+	// sidesteps the escaping entirely.
+	work, err := os.MkdirTemp("", "vspush-sub-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(work)
+	linked := filepath.Join(work, "src"+filepath.Ext(in))
+	if err := os.Symlink(in, linked); err != nil {
+		return fmt.Errorf("linking the source for the subtitle filter: %w", err)
+	}
+
+	var filters []string
+	if o.sid > 0 {
+		// si is 0-based among subtitle streams; --sid is 1-based, as in mpv.
+		filters = append(filters, fmt.Sprintf("subtitles=%s:si=%d", filepath.Base(linked), o.sid-1))
+	}
+	if o.height > 0 {
+		filters = append(filters, fmt.Sprintf("scale=-2:%d", o.height))
+	}
+
+	audioIdx := 0
+	if o.aid > 0 {
+		audioIdx = o.aid - 1
+	}
+
+	args := []string{
+		"-nostdin", "-y", "-v", "error", "-stats",
+		"-i", filepath.Base(linked),
+		"-map", "0:v:0",
+		"-map", fmt.Sprintf("0:a:%d", audioIdx),
+	}
+	if len(filters) > 0 {
+		args = append(args, "-vf", strings.Join(filters, ","))
+	}
+	enc := videoEncoder()
+	args = append(args,
+		"-c:v", enc,
+		"-profile:v", "high",
+		"-g", strconv.Itoa(gopFrames),
+		"-bf", "2",
+	)
+	if enc == "libx264" {
+		// Quality-targeted where the encoder supports it: CRF spends bits
+		// where they are needed instead of holding a flat bitrate through
+		// scenes that do not need it. VideoToolbox has no CRF equivalent.
+		args = append(args, "-crf", "20", "-preset", "medium",
+			"-maxrate", fmt.Sprintf("%dk", o.kbps), "-bufsize", fmt.Sprintf("%dk", o.kbps*2))
+	} else {
+		args = append(args, "-b:v", fmt.Sprintf("%dk", o.kbps),
+			"-maxrate", fmt.Sprintf("%dk", o.kbps*3/2),
+			"-bufsize", fmt.Sprintf("%dk", o.kbps*2))
+	}
+	args = append(args,
+		"-c:a", "aac", "-b:a", fmt.Sprintf("%dk", o.akbps), "-ac", "2", "-ar", "48000",
+		// moov before mdat, so the browser can start playing and can seek
+		// without first fetching the tail of the file.
+		"-movflags", "+faststart",
+		out,
+	)
+
+	log.Info("transcoding", "ffmpeg", ff, "encoder", enc, "aid", o.aid, "sid", o.sid,
+		"kbps", o.kbps, "audioKbps", o.akbps, "gopFrames", gopFrames)
+	cmd := exec.CommandContext(ctx, ff, args...)
+	cmd.Dir = work // so the bare filename in the filter resolves
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// findSubtitleFFmpeg returns an ffmpeg that can burn subtitles. Homebrew's
+// default `ffmpeg` is built without libass and has no `subtitles` filter;
+// `ffmpeg-full` has it.
+func findSubtitleFFmpeg(preferred string) (string, error) {
+	candidates := []string{preferred, "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg", "ffmpeg-full", "ffmpeg"}
+	var tried []string
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		path, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		tried = append(tried, path)
+		out, err := exec.Command(path, "-hide_banner", "-filters").Output()
+		if err == nil && strings.Contains(string(out), " subtitles ") {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("no ffmpeg with libass found (tried %s); "+
+		"subtitles cannot be burned in without one — on macOS: brew install ffmpeg-full, "+
+		"or pass --ffmpeg with a build that has the subtitles filter",
+		strings.Join(tried, ", "))
+}
+
+// probeChapters reads chapter marks from the source. The seek bar already
+// draws chapter ticks; nothing could carry them over RTP, so they were always
+// empty until now.
+func probeChapters(ctx context.Context, ffprobe, path string) ([]proto.MediaChapter, error) {
+	out, err := exec.CommandContext(ctx, ffprobe,
+		"-v", "error", "-show_chapters", "-of", "json", path).Output()
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Chapters []struct {
+			StartTime string `json:"start_time"`
+			Tags      struct {
+				Title string `json:"title"`
+			} `json:"tags"`
+		} `json:"chapters"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		return nil, err
+	}
+	var chs []proto.MediaChapter
+	for _, c := range parsed.Chapters {
+		secs, err := strconv.ParseFloat(c.StartTime, 64)
+		if err != nil {
+			continue
+		}
+		chs = append(chs, proto.MediaChapter{StartMS: int64(secs * 1000), Title: repairMojibake(c.Tags.Title)})
+	}
+	return chs, nil
 }
