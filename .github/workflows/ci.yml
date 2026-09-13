@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm run sync-proto && npx tsc --noEmit && npx vitest run && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+  server:
+    runs-on: ubuntu-latest
+    needs: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: server/internal/web/dist
+      - run: cd server && go vet ./... && go test ./...
+      - run: cd server && CGO_ENABLED=0 GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/server-linux-arm64 ./cmd/server
+      - run: cd server && CGO_ENABLED=0 GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o bin/server-linux-amd64 ./cmd/server
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-binaries
+          path: server/bin/
+
+  projector:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            setup: brew install mpv opus pkgconf
+          - os: ubuntu-latest
+            setup: sudo apt-get update && sudo apt-get install -y libmpv-dev libopus-dev pkg-config
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: ${{ matrix.setup }}
+      - run: cd projector && go vet -tags "pkgconfig nolibopusfile" ./... && go test -tags "pkgconfig nolibopusfile" ./...
+      - run: cd projector && go build -tags "pkgconfig nolibopusfile" -o bin/projector-${{ runner.os }}-${{ runner.arch }} ./cmd/projector
+      - uses: actions/upload-artifact@v4
+        with:
+          name: projector-${{ runner.os }}-${{ runner.arch }}
+          path: projector/bin/
