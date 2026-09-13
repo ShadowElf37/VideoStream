@@ -30,18 +30,10 @@ func MintLiveKitToken(apiKey, apiSecret, roomID, identity, name, role, color str
 	}
 
 	grant := &auth.VideoGrant{
-		RoomJoin:   true,
-		Room:       roomID,
-		CanPublish: boolPtr(true),
-		// The projector subscribes to nothing — it joins with AutoSubscribe
-		// off and never asks for a track. The permission is granted anyway
-		// because LiveKit withholds the participant roster from anyone who
-		// cannot subscribe, and the projector needs the roster to know who is
-		// allowed to drive playback. Without it, a projector cannot identify
-		// the sender of a command until LiveKit happens to attach the
-		// participant to a data packet, and the host's first commands are
-		// refused as if they came from a stranger.
-		CanSubscribe:   boolPtr(true),
+		RoomJoin:       true,
+		Room:           roomID,
+		CanPublish:     boolPtr(true),
+		CanSubscribe:   boolPtr(role != proto.RoleProjector),
 		CanPublishData: boolPtr(true),
 		RoomAdmin:      role == proto.RoleHost,
 	}
