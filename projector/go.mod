@@ -1,6 +1,6 @@
 module github.com/ShadowElf37/VideoStream/projector
 
-go 1.26
+go 1.25.0
 
 require (
 	github.com/gen2brain/go-mpv v0.4.0
