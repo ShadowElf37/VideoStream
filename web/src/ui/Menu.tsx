@@ -9,15 +9,17 @@ export function Menu({
   side = 'top',
   align = 'center',
   className,
+  onOpenChange,
 }: {
   trigger: ReactNode;
   children: ReactNode;
   side?: 'top' | 'bottom' | 'left' | 'right';
   align?: 'start' | 'center' | 'end';
   className?: string;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
-    <RM.Root modal={false}>
+    <RM.Root modal={false} onOpenChange={onOpenChange}>
       <RM.Trigger asChild>{trigger}</RM.Trigger>
       <RM.Portal>
         <RM.Content

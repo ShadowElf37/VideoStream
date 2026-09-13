@@ -1,4 +1,4 @@
-import { AudioPresets, Room, RoomEvent, type RoomOptions } from 'livekit-client';
+import { AudioPresets, DisconnectReason, Room, RoomEvent, type RoomOptions } from 'livekit-client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getAudioContext, unlockAudio } from '@/audio/context';
 import { api, ApiError } from '@/lib/api';
@@ -31,34 +31,40 @@ function roomOptions(): RoomOptions {
   };
 }
 
+/** Reasons where retrying with a fresh token is pointless. */
+const FINAL_REASONS = new Set<DisconnectReason>([
+  DisconnectReason.CLIENT_INITIATED,
+  DisconnectReason.DUPLICATE_IDENTITY,
+  DisconnectReason.PARTICIPANT_REMOVED,
+  DisconnectReason.ROOM_DELETED,
+]);
+
 /**
- * Token fetch + LiveKit connect lifecycle. Creates a fresh Room per connect so
- * a reconnect-after-token-expiry starts from a clean slate.
+ * Token fetch + LiveKit connect lifecycle. Every (re)connect fetches a fresh
+ * token and creates a fresh Room; the previous Room is only torn down once the
+ * new one exists so the room view never unmounts during a reconnect.
  */
 export function useRoomConnection(roomId: string) {
   const [room, setRoom] = useState<Room | null>(null);
   const [connected, setConnected] = useState(false);
   const roomRef = useRef<Room | null>(null);
   const lastJoin = useRef<JoinOptions | null>(null);
+  const autoRetried = useRef(false);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const session = useSession;
 
-  const teardown = useCallback(async () => {
-    const r = roomRef.current;
-    roomRef.current = null;
-    setRoom(null);
-    setConnected(false);
-    if (r) {
-      r.removeAllListeners();
-      await r.disconnect().catch(() => undefined);
-    }
+  const dispose = useCallback((r: Room | null) => {
+    if (!r) return;
+    r.removeAllListeners();
+    void r.disconnect().catch(() => undefined);
   }, []);
 
   const connect = useCallback(
     async (opts: JoinOptions) => {
       lastJoin.current = opts;
+      if (retryTimer.current) clearTimeout(retryTimer.current);
       const s = session.getState();
       s.setPhase('connecting');
-      await teardown();
 
       // The click that gets us here is the user gesture that unlocks audio.
       await unlockAudio();
@@ -72,16 +78,20 @@ export function useRoomConnection(roomId: string) {
           password: opts.password,
         });
       } catch (e) {
-        const msg = e instanceof ApiError ? (e.status === 401 || e.status === 403 ? 'Wrong password or link.' : e.message) : String(e);
-        s.setPhase('failed', msg);
+        const msg = e instanceof ApiError ? (e.isAuth ? 'Wrong password or link.' : e.message) : String(e);
+        s.setPhase(roomRef.current ? 'disconnected' : 'failed', msg);
         throw e;
       }
       s.setToken(token);
+      s.setName(opts.name);
       useChat.getState().setSelf(token.identity);
 
+      const old = roomRef.current;
       const r = new Room(roomOptions());
       roomRef.current = r;
+      setConnected(false);
       setRoom(r);
+      dispose(old);
 
       r.on(RoomEvent.Reconnecting, () => session.getState().setPhase('reconnecting'));
       r.on(RoomEvent.Reconnected, () => {
@@ -89,18 +99,34 @@ export function useRoomConnection(roomId: string) {
         session.getState().toast('Reconnected');
       });
       r.on(RoomEvent.Disconnected, (reason) => {
+        if (roomRef.current !== r) return;
         setConnected(false);
-        session.getState().setPhase('disconnected', reason !== undefined ? `Disconnected (${String(reason)})` : 'Disconnected');
+        const final = reason !== undefined && FINAL_REASONS.has(reason);
+        session.getState().setPhase('disconnected', describeReason(reason));
+        // One automatic retry with a fresh token (covers token expiry and server restarts).
+        if (!final && !autoRetried.current && lastJoin.current) {
+          autoRetried.current = true;
+          retryTimer.current = setTimeout(() => void connect(lastJoin.current!).catch(() => undefined), 1500);
+        }
       });
       r.on(RoomEvent.AudioPlaybackStatusChanged, () => session.getState().setAudioBlocked(!r.canPlaybackAudio));
 
       try {
         await r.connect(token.url, token.token, { autoSubscribe: true });
       } catch (e) {
-        s.setPhase('failed', e instanceof Error ? e.message : String(e));
-        await teardown();
+        const msg = e instanceof Error ? e.message : String(e);
+        if (old) {
+          // Reconnect attempt failed: keep the room view, show the card.
+          session.getState().setPhase('disconnected', msg);
+        } else {
+          session.getState().setPhase('failed', msg);
+          roomRef.current = null;
+          setRoom(null);
+          dispose(r);
+        }
         throw e;
       }
+      autoRetried.current = false;
       await r.startAudio().catch(() => session.getState().setAudioBlocked(true));
       session.getState().setAudioBlocked(!r.canPlaybackAudio);
 
@@ -118,10 +144,10 @@ export function useRoomConnection(roomId: string) {
       session.getState().setPhase('connected');
       setConnected(true);
     },
-    [roomId, session, teardown],
+    [roomId, session, dispose],
   );
 
-  /** Re-fetch a token and connect again (used after Disconnected / token expiry). */
+  /** Re-fetch a token and connect again (used from the reconnect card). */
   const reconnect = useCallback(async () => {
     const j = lastJoin.current;
     if (!j) return;
@@ -130,16 +156,40 @@ export function useRoomConnection(roomId: string) {
 
   const leave = useCallback(async () => {
     lastJoin.current = null;
-    await teardown();
+    if (retryTimer.current) clearTimeout(retryTimer.current);
+    const r = roomRef.current;
+    roomRef.current = null;
+    setRoom(null);
+    setConnected(false);
+    dispose(r);
     session.getState().reset();
     useChat.getState().reset();
-  }, [teardown, session]);
+  }, [dispose, session]);
 
   useEffect(() => {
     return () => {
-      void teardown();
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      dispose(roomRef.current);
+      roomRef.current = null;
     };
-  }, [teardown]);
+  }, [dispose]);
 
   return { room, connected, connect, reconnect, leave };
+}
+
+function describeReason(reason?: DisconnectReason): string {
+  switch (reason) {
+    case DisconnectReason.DUPLICATE_IDENTITY:
+      return 'You joined from another tab or device.';
+    case DisconnectReason.PARTICIPANT_REMOVED:
+      return 'You were removed from the room.';
+    case DisconnectReason.ROOM_DELETED:
+      return 'The room was closed.';
+    case DisconnectReason.SERVER_SHUTDOWN:
+      return 'The media server restarted.';
+    case DisconnectReason.CLIENT_INITIATED:
+      return 'Disconnected.';
+    default:
+      return 'The connection to the room was lost.';
+  }
 }

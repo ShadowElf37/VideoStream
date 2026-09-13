@@ -10,7 +10,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg'],
+      includeAssets: ['icon.svg', 'icon-maskable.svg'],
       manifest: {
         name: 'VideoStream',
         short_name: 'VideoStream',
@@ -44,7 +44,15 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
-    chunkSizeWarningLimit: 1200,
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          livekit: ['livekit-client', '@livekit/components-react'],
+          react: ['react', 'react-dom', 'react-router'],
+        },
+      },
+    },
   },
   test: {
     environment: 'node',

@@ -4,8 +4,8 @@ import type { Topic } from '@/proto/messages';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-export function encode(msg: unknown): Uint8Array {
-  return enc.encode(JSON.stringify(msg));
+export function encode(msg: unknown): Uint8Array<ArrayBuffer> {
+  return enc.encode(JSON.stringify(msg)) as Uint8Array<ArrayBuffer>;
 }
 
 export function decode<T>(payload: Uint8Array): T | null {

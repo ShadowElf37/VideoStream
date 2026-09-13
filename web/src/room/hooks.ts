@@ -1,5 +1,5 @@
 import { ConnectionQuality, ParticipantEvent, type Participant } from 'livekit-client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 export function useMediaQuery(query: string): boolean {
   const [match, setMatch] = useState(() => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false));
@@ -79,20 +79,24 @@ export function useAutoHide(delay = 2500, enabled = true) {
   return { visible: visible || pinned || !enabled, pin: setPinned };
 }
 
-export function useFullscreen(target: React.RefObject<HTMLElement | null>) {
+/**
+ * Fullscreen the whole document (not the room root): Radix portals render
+ * into <body>, and anything outside the fullscreen element is invisible.
+ */
+export function useFullscreen() {
   const [active, setActive] = useState(false);
   useEffect(() => {
     const on = () => setActive(!!document.fullscreenElement);
     document.addEventListener('fullscreenchange', on);
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
-  const toggle = async () => {
+  const toggle = useCallback(async () => {
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
-      else await (target.current ?? document.documentElement).requestFullscreen({ navigationUI: 'hide' });
+      else await document.documentElement.requestFullscreen({ navigationUI: 'hide' });
     } catch (e) {
       console.warn('fullscreen failed', e);
     }
-  };
-  return { active, toggle };
+  }, []);
+  return useMemo(() => ({ active, toggle }), [active, toggle]);
 }

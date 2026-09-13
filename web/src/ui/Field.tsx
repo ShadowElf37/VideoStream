@@ -1,13 +1,27 @@
 import { forwardRef, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from 'react';
 import { cn } from '@/lib/cn';
 
-export function Field({ label, hint, children, className }: { label: ReactNode; hint?: ReactNode; children: ReactNode; className?: string }) {
+/** Labelled control. Use `group` when the content holds more than one control (renders a div, not a label). */
+export function Field({
+  label,
+  hint,
+  children,
+  className,
+  group,
+}: {
+  label: ReactNode;
+  hint?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  group?: boolean;
+}) {
+  const Tag = group ? 'div' : 'label';
   return (
-    <label className={cn('block', className)}>
+    <Tag className={cn('block', className)}>
       <span className="block text-xs font-medium text-muted mb-1.5">{label}</span>
       {children}
       {hint && <span className="block text-xs text-muted mt-1.5">{hint}</span>}
-    </label>
+    </Tag>
   );
 }
 

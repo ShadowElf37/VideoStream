@@ -26,6 +26,8 @@ export interface Reaction {
 interface SessionStore {
   roomId: string;
   room: RoomInfo | null;
+  /** Display name the local user joined with. */
+  name: string;
   token: TokenResponse | null;
   role: Role | null;
   settings: RoomSettings | null;
@@ -39,6 +41,7 @@ interface SessionStore {
   audioBlocked: boolean;
 
   setRoom: (roomId: string, room: RoomInfo | null) => void;
+  setName: (name: string) => void;
   setToken: (token: TokenResponse | null) => void;
   setSettings: (s: RoomSettings) => void;
   setCredentials: (c: Credentials) => void;
@@ -59,6 +62,7 @@ let seq = 1;
 export const useSession = create<SessionStore>()((set) => ({
   roomId: '',
   room: null,
+  name: '',
   token: null,
   role: null,
   settings: null,
@@ -72,6 +76,7 @@ export const useSession = create<SessionStore>()((set) => ({
   audioBlocked: false,
 
   setRoom: (roomId, room) => set({ roomId, room, settings: room?.settings ?? null }),
+  setName: (name) => set({ name }),
   setToken: (token) => set({ token, role: token?.role ?? null, settings: token?.settings ?? null }),
   setSettings: (settings) => set({ settings }),
   setCredentials: (credentials) => set({ credentials }),

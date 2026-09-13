@@ -35,7 +35,7 @@ export function useRoomEvents(room: Room | null) {
           if (!m) return;
           chat().add(m);
           const self = chat().self;
-          const selfName = session().token?.identity === self ? session().token?.name : undefined;
+          const selfName = session().name;
           const fromOther = m.kind === 'user' && m.from.identity !== self;
           if (fromOther && document.hidden && usePrefs.getState().notificationSounds) playNotification();
           if (fromOther && selfName && mentionsName(m.text, selfName)) session().toast(`${m.from.name} mentioned you`, 'info', 3000);
