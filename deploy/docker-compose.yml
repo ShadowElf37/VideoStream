@@ -49,10 +49,17 @@ services:
       - caddy_data:/caddy:ro
 
   app:
-    image: ghcr.io/shadowelf37/videostream-server:latest
-    # Build locally instead of pulling (useful before the first image is pushed):
-    # build:
-    #   context: ../server
+    # Built on this machine from the checked-out source — no registry account
+    # and no image push needed. The build context is the REPOSITORY ROOT
+    # because the server module's replace points at ../proto and the SPA is
+    # built from web/ (see server/Dockerfile).
+    #   sudo docker compose build app     # after a git pull
+    # To pull a prebuilt image instead, replace `build:` with
+    #   image: ghcr.io/shadowelf37/videostream-server:latest
+    image: videostream-server:local
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     container_name: videostream-app
     restart: unless-stopped
     env_file: .env

@@ -6,7 +6,7 @@ One `docker compose` stack on a single Oracle Cloud Ampere A1 instance:
 |---|---|---|---|
 | `caddy` | `caddy:2` | bridge, publishes 80/443 | TLS (Let's Encrypt), reverse proxy, HTTP/3 |
 | `livekit` | `livekit/livekit-server:v1` | **host** | SFU + embedded TURN |
-| `app` | `ghcr.io/shadowelf37/videostream-server:latest` | bridge | rooms, tokens, chat history, serves the web build |
+| `app` | built here from `server/Dockerfile` | bridge | rooms, tokens, chat history, serves the web build |
 | `redis` | `redis:7-alpine` | host | *(profile `ingress`)* job queue for ingress |
 | `ingress` | `livekit/ingress:v1` | host | *(profile `ingress`)* WHIP/RTMP publishing |
 
@@ -21,6 +21,10 @@ Two things are worth knowing before reading anything else:
 - **Caddy's certificate store is shared, read-only, with LiveKit** so TURN/TLS
   on :5349 can present a real certificate for `turn.$DOMAIN` without a second
   ACME client. Details in `livekit.yaml.tmpl`.
+- **The app image is built on the VM**, not pulled from a registry — one less
+  account to hold. `server/Dockerfile` builds the SPA (node stage) and the Go
+  binary that embeds it, with the repository root as the build context. Rebuild
+  it after a `git pull` with `sudo docker compose build app`.
 
 Files:
 
@@ -122,8 +126,12 @@ the instance firewall by **inserting** ACCEPT rules *before* Oracle's
 `REJECT --reject-with icmp-host-prohibited` rule in `INPUT` (appending after it
 would do nothing); adds the TURN hairpin DNAT; saves the ruleset with
 `netfilter-persistent save`; prompts for `DOMAIN` and `PUBLIC_IP` and generates
-the secrets into `.env`; renders `livekit.yaml` and `ingress.yaml`; and brings
+the secrets into `.env`; renders `livekit.yaml` and `ingress.yaml`; builds the app image; and brings
 the stack up. Re-running it is safe.
+
+The first `docker compose build app` takes a few minutes (npm install, Vite
+build, Go build); later ones reuse the layer cache. It needs ~2 GB of free disk
+and is comfortable on the 4-OCPU/24 GB A1 shape.
 
 Watch the certificates arrive:
 
@@ -212,7 +220,8 @@ sudo docker compose ps
 sudo docker compose logs -f app            # or caddy / livekit
 sudo docker compose logs --since 15m livekit
 
-sudo docker compose pull && sudo docker compose up -d   # update to latest images
+git pull && sudo docker compose build app && sudo docker compose up -d  # deploy new code
+sudo docker compose pull && sudo docker compose up -d   # update caddy / livekit
 sudo docker compose restart livekit                     # after editing livekit.yaml
 sudo docker compose down                                # stop everything
 ```
@@ -312,3 +321,5 @@ lk room join --publish-demo --url ws://localhost:7880 \
 | TURN never relays | hairpin DNAT missing (`sudo iptables -t nat -L OUTPUT -n`), or UDP 30000–30100 closed |
 | `livekit` logs a TURN cert error | certificate not issued yet, or the path in `livekit.yaml` does not match — `sudo docker compose exec livekit ls /caddy/caddy/certificates/*/turn.$DOMAIN/` |
 | Rules vanish after reboot | `netfilter-persistent save` was not run |
+| App page says "web build not present" | the image was built without the web stage — `sudo docker compose build --no-cache app` |
+| `compose build app` fails on `npm ci` | out of memory or disk — `df -h`, and check the shape really has 24 GB RAM |

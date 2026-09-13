@@ -1,0 +1,25 @@
+# Build context for server/Dockerfile is the repository root. Keep it small and
+# keep host-built artifacts out, so the image is built purely from sources.
+.git
+.github
+.DS_Store
+docs
+testdata
+
+# Host-built artifacts. The image builds its own SPA (web stage) and binary.
+node_modules
+web/dist
+web/dev-dist
+server/internal/web/dist
+server/bin
+projector/bin
+
+# Not needed to build the server image.
+projector
+deploy/data
+deploy/.env
+deploy/livekit.yaml
+deploy/ingress.yaml
+*.db
+*.db-*
+*.log

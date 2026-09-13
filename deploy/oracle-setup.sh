@@ -224,17 +224,17 @@ mkdir -p data # SQLite lives here, bind-mounted into the app container
 # 6. bring the stack up
 # --------------------------------------------------------------------------
 
-log "Pulling images"
-# Non-fatal: the app image may not have been published yet, and the rest of the
-# stack is still worth starting.
-$SUDO docker compose pull || info "some images could not be pulled (see above)"
+log "Pulling images (caddy, livekit)"
+$SUDO docker compose pull caddy livekit
+
+# The app image is built here from the checked-out source: the Dockerfile
+# builds the SPA (node stage) and the Go binary that embeds it. First build on
+# a 4-OCPU A1 takes a few minutes; later ones hit the layer cache.
+log "Building the app image (this takes a few minutes the first time)"
+$SUDO docker compose build app
 
 log "Starting the stack"
-if ! $SUDO docker compose up -d; then
-	die "compose failed. If it was the app image, either push it to ghcr.io or
-    uncomment the 'build: context: ../server' block in docker-compose.yml and
-    run: $SUDO docker compose up -d --build app"
-fi
+$SUDO docker compose up -d
 $SUDO docker compose ps
 
 # --------------------------------------------------------------------------
