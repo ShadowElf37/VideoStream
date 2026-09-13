@@ -303,8 +303,8 @@ cat <<EOF
 
   [ ] VCN security list — add the same ingress rules in the OCI console
       (Networking > Virtual Cloud Networks > your VCN > Subnet > Security
-      List). iptables alone is not enough; Oracle drops the traffic before
-      it ever reaches the instance:
+      List). ufw on this box is not enough; Oracle drops the traffic
+      before it ever reaches the instance:
         TCP  80, 443          0.0.0.0/0
         TCP  7881, 5349       0.0.0.0/0
         UDP  443, 7882, 3478  0.0.0.0/0
