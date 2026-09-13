@@ -121,11 +121,8 @@ cd videostream/deploy
 ```
 
 It installs Docker + the compose plugin from Docker's own apt repository,
-`gettext-base` (for `envsubst`) and `iptables-persistent`; opens the ports in
-the instance firewall by **inserting** ACCEPT rules *before* Oracle's
-`REJECT --reject-with icmp-host-prohibited` rule in `INPUT` (appending after it
-would do nothing); adds the TURN hairpin DNAT; saves the ruleset with
-`netfilter-persistent save`; prompts for `DOMAIN` and `PUBLIC_IP` and generates
+`gettext-base` (for `envsubst`) and `ufw`; configures the instance firewall
+(see below); adds the TURN hairpin DNAT; prompts for `DOMAIN` and `PUBLIC_IP` and generates
 the secrets into `.env`; renders `livekit.yaml` and `ingress.yaml`; builds the app image; and brings
 the stack up. Re-running it is safe.
 
@@ -142,6 +139,39 @@ sudo docker compose logs livekit | grep -i turn
 
 If Caddy loops on ACME failures, DNS has not propagated or the VCN rule for TCP
 80 is missing.
+
+### The instance firewall
+
+`ufw` owns the instance's ruleset; `oracle-setup.sh` configures it and
+`netfilter-persistent` is disabled so the two cannot fight over `INPUT`.
+
+```bash
+sudo ufw status verbose          # what is open
+sudo ufw allow 1935/tcp          # e.g. when enabling the ingress profile
+sudo ufw delete allow 1935/tcp
+```
+
+Two Docker-shaped caveats are worth knowing before you trust that output:
+
+- **Ports published by a container bypass ufw entirely.** Caddy's 80/443 are
+  DNAT'd in the `nat` table and traverse `FORWARD`, never `INPUT`, so `ufw deny
+  443` would *not* close them — only removing the `ports:` mapping does. They
+  are listed in the ruleset for readability, but Docker is what exposes them.
+- **LiveKit's ports do go through ufw**, because it runs with
+  `network_mode: host`. That includes 7880, which is allowed only `in on
+  docker0` and `in on br-videostream` — the bridges caddy and app reach the host
+  from. It is never open to the internet. The compose file pins that bridge's
+  interface name, since ufw cannot match `br-*` wildcards.
+
+The TURN hairpin DNAT lives in a managed block at the top of
+`/etc/ufw/before.rules` rather than in `iptables-persistent`, so it survives
+`ufw reload` and reboots. Re-running `oracle-setup.sh` rewrites that block,
+which is how a changed `PUBLIC_IP` gets picked up.
+
+**ufw is not a substitute for the VCN security list.** Oracle drops traffic
+before it reaches the instance, so a port must be open in *both* — unless you
+have deliberately left the security list wide open, in which case ufw is the
+only thing enforcing anything.
 
 ### Certificate renewal
 
@@ -316,12 +346,12 @@ lk room join --publish-demo --url ws://localhost:7880 \
 |---|---|
 | Caddy retries ACME forever | DNS not propagated, or TCP 80 closed in the VCN |
 | Page loads, joining hangs | `/rtc*` not proxied, or 7880 not listening on the host (`sudo ss -lntp \| grep 7880`) |
-| Caddy logs `dial tcp 172.17.0.1:7880: no route to host`, Twirp 502s | the INPUT REJECT is eating container→host traffic; 7880 must be allowed on `docker0`/`br+` (oracle-setup.sh does this) |
-| Video connects only on TCP | UDP 7882 blocked — check the VCN rule *and* `sudo iptables -L INPUT -n --line-numbers` for a rule above the REJECT |
+| Caddy logs `dial tcp 172.17.0.1:7880: no route to host`, Twirp 502s | the firewall is eating container→host traffic; 7880 must be allowed in on `docker0` and `br-videostream` (oracle-setup.sh does this) |
+| Video connects only on TCP | UDP 7882 blocked — check the VCN rule *and* `sudo ufw status` |
 | Remote candidates are `10.0.0.x` | `rtc.node_ip` / `use_external_ip` wrong, or `PUBLIC_IP` stale after an IP change |
-| TURN never relays | hairpin DNAT missing (`sudo iptables -t nat -L OUTPUT -n`), or UDP 30000–30100 closed |
+| TURN never relays | hairpin DNAT missing (`sudo iptables -t nat -L OUTPUT -n`; it is defined in `/etc/ufw/before.rules`), or UDP 30000–30100 closed |
 | `livekit` logs a TURN cert error | certificate not issued yet, or the path in `livekit.yaml` does not match — `sudo docker compose exec livekit ls /caddy/caddy/certificates/*/turn.$DOMAIN/` |
-| Rules vanish after reboot | `netfilter-persistent save` was not run |
+| Rules vanish after reboot | ufw not enabled (`sudo ufw status`), or something re-enabled `netfilter-persistent` alongside it |
 | `app` restarts on "unable to open database file (14)" | `deploy/data` not owned by the container user — `sudo chown -R 65532:65532 deploy/data` |
 | App page says "web build not present" | the image was built without the web stage — `sudo docker compose build --no-cache app` |
 | `compose build app` fails on `npm ci` | out of memory or disk — `df -h`, and check the shape really has 24 GB RAM |

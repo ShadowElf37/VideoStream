@@ -12,7 +12,8 @@
 # ingress.yaml from the templates + .env.
 #
 # What it does NOT do (you must, in the OCI console — see README.md):
-#   * open the same ports in the VCN security list
+#   * open the same ports in the VCN security list (ufw here is not a
+#     substitute: Oracle drops traffic before it reaches the instance)
 #   * attach a reserved public IP
 #   * upgrade the tenancy to pay-as-you-go
 #   * point DNS at the instance
@@ -51,17 +52,6 @@ export DEBIAN_FRONTEND=noninteractive
 $SUDO apt-get update -qq
 # gettext-base provides envsubst, used to render the yaml templates.
 $SUDO apt-get install -y -qq ca-certificates curl gnupg gettext-base
-
-# iptables-persistent asks two debconf questions on install; preseed them so an
-# unattended run does not hang forever on a purple dialog.
-log "Installing iptables-persistent / netfilter-persistent"
-if dpkg -s iptables-persistent >/dev/null 2>&1; then
-	info "already installed"
-else
-	echo 'iptables-persistent iptables-persistent/autosave_v4 boolean false' | $SUDO debconf-set-selections
-	echo 'iptables-persistent iptables-persistent/autosave_v6 boolean false' | $SUDO debconf-set-selections
-	$SUDO apt-get install -y -qq iptables-persistent
-fi
 
 log "Installing Docker Engine + compose plugin from Docker's apt repository"
 if command -v docker >/dev/null 2>&1; then
@@ -137,104 +127,128 @@ set +a
 : "${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET missing from .env}"
 
 # --------------------------------------------------------------------------
-# 3. instance firewall
+# 3. instance firewall (ufw) + TURN hairpin
 #
-# Oracle's Ubuntu image ships /etc/iptables/rules.v4 with, at the end of INPUT:
-#     -A INPUT -j REJECT --reject-with icmp-host-prohibited
-# Appending ACCEPT rules after it does nothing — they are never reached. Every
-# rule below is therefore INSERTED at the REJECT rule's line number, which
-# pushes the REJECT down and leaves our rule in front of it.
+# ufw is the only thing standing between the internet and this box if the VCN
+# security list is left permissive, so it is configured explicitly rather than
+# left at whatever the image shipped.
+#
+# Two Docker-shaped caveats:
+#
+#   * Ports PUBLISHED by a container (caddy's 80/443) are DNAT'd in the nat
+#     table and traverse FORWARD, not INPUT — ufw does not filter them, and a
+#     `ufw deny 443` would not close them. They are listed below anyway so the
+#     intent is readable, but Docker is what actually exposes them.
+#
+#   * livekit runs with network_mode: host, so ITS ports really do hit INPUT
+#     and ufw governs them. That includes 7880, which caddy and app reach over
+#     the bridge — allowed per-interface below so it stays private to the host.
+#
+# Oracle's image ships a REJECT-terminated INPUT chain plus iptables-persistent.
+# Running both that and ufw means two things fighting over one ruleset, so the
+# old chain is flushed and netfilter-persistent is disabled; ufw owns INPUT and
+# restores itself at boot.
 # --------------------------------------------------------------------------
 
-reject_line() {
-	# Line number of the first REJECT rule in INPUT, empty if there is none.
-	$SUDO iptables -L INPUT --line-numbers -n | awk '$2 == "REJECT" { print $1; exit }'
-}
+log "Installing and configuring ufw"
+$SUDO apt-get install -y -qq ufw
 
-allow() { # allow <tcp|udp> <port|first:last>
-	local proto="$1" port="$2" line
-	if $SUDO iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; then
-		info "$proto/$port already allowed"
-		return
-	fi
-	line="$(reject_line)"
-	if [[ -n "$line" ]]; then
-		$SUDO iptables -I INPUT "$line" -p "$proto" --dport "$port" -j ACCEPT
-		info "$proto/$port inserted at INPUT line $line (before REJECT)"
-	else
-		# No REJECT rule (someone already cleaned up the ruleset): append.
-		$SUDO iptables -A INPUT -p "$proto" --dport "$port" -j ACCEPT
-		info "$proto/$port appended to INPUT (no REJECT rule found)"
-	fi
-}
+# SSH first and unconditionally: every later step is a chance to lock this box
+# out, and Oracle's serial console is a miserable way to find that out.
+$SUDO ufw allow 22/tcp comment 'SSH' >/dev/null
 
-log "Opening ports in the instance firewall"
-allow tcp 80           # HTTP: ACME challenges + redirect to HTTPS
-allow tcp 443          # HTTPS: web app, LiveKit signalling (/rtc), Twirp
-allow udp 443          # HTTP/3
-allow tcp 7881         # LiveKit ICE/TCP fallback (for UDP-blocked clients)
-allow udp 7882         # LiveKit WebRTC media (single UDP mux port)
-allow tcp 5349         # TURN over TLS
-allow udp 3478         # TURN over UDP
-allow udp 30000:30100  # TURN relay allocation range
-# Ingress profile (off by default): TCP 1935 (RTMP), UDP 7885 (WHIP media).
-# allow tcp 1935
-# allow udp 7885
+$SUDO ufw allow 80/tcp   comment 'HTTP: ACME + redirect'      >/dev/null
+$SUDO ufw allow 443/tcp  comment 'HTTPS: app + livekit signal' >/dev/null
+$SUDO ufw allow 443/udp  comment 'HTTP/3'                      >/dev/null
+$SUDO ufw allow 7881/tcp comment 'LiveKit ICE/TCP fallback'    >/dev/null
+$SUDO ufw allow 7882/udp comment 'LiveKit WebRTC media mux'    >/dev/null
+$SUDO ufw allow 5349/tcp comment 'TURN over TLS'               >/dev/null
+$SUDO ufw allow 3478/udp comment 'TURN over UDP'               >/dev/null
+$SUDO ufw allow 30000:30100/udp comment 'TURN relay range'     >/dev/null
+# Ingress profile (off by default):
+# $SUDO ufw allow 1935/tcp comment 'RTMP ingress'
+# $SUDO ufw allow 7885/udp comment 'WHIP ingress media'
 
-# LiveKit's signalling/Twirp port, reachable ONLY from Docker's bridge networks.
-#
-# livekit runs with network_mode: host, so caddy and app (on the bridge) reach
-# it through the host-gateway address — and that traffic arrives on a bridge
-# interface and traverses INPUT, where the REJECT above answers it with
-# icmp-host-prohibited. Caddy then fails every /rtc and /twirp request with
-# "dial tcp 172.17.0.1:7880: connect: no route to host" and the app cannot
-# create rooms at all.
-#
-# Matching on the incoming interface (docker0 and compose's br-*) rather than a
-# source CIDR keeps 7880 unreachable from the internet, which is the point of
-# leaving it out of the VCN security list.
-allow_docker() { # allow_docker <tcp|udp> <port>
-	local proto="$1" port="$2" line iface
-	for iface in docker0 'br+'; do
-		if $SUDO iptables -C INPUT -i "$iface" -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; then
-			info "$proto/$port on $iface already allowed"
-			continue
-		fi
-		line="$(reject_line)"
-		if [[ -n "$line" ]]; then
-			$SUDO iptables -I INPUT "$line" -i "$iface" -p "$proto" --dport "$port" -j ACCEPT
-		else
-			$SUDO iptables -A INPUT -i "$iface" -p "$proto" --dport "$port" -j ACCEPT
-		fi
-		info "$proto/$port allowed from $iface (containers -> host)"
-	done
-}
+# livekit's signalling/Twirp port: reachable from the container bridges only.
+# Without this, caddy fails every /rtc and /twirp request with
+# "dial tcp 172.17.0.1:7880: connect: no route to host" and no room can be
+# created, while livekit itself looks perfectly healthy on *:7880.
+# br-videostream is pinned in docker-compose.yml; docker0 is the default bridge.
+for IFACE in docker0 br-videostream; do
+	$SUDO ufw allow in on "$IFACE" to any port 7880 proto tcp \
+		comment "livekit signalling from $IFACE" >/dev/null
+done
 
-allow_docker tcp 7880
+# Docker manages its own FORWARD rules; ufw defaulting to DROP there breaks
+# container networking in ways that look like random DNS failures.
+if ! grep -q '^DEFAULT_FORWARD_POLICY="ACCEPT"' /etc/default/ufw; then
+	$SUDO sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+	info "set DEFAULT_FORWARD_POLICY=ACCEPT (Docker needs it)"
+fi
 
 # --------------------------------------------------------------------------
-# 4. TURN hairpin
+# TURN hairpin, as a nat block inside ufw's before.rules.
 #
 # A relay candidate points at the *public* IP. When livekit-server (or anything
 # else on this box) tries to reach its own relay through that address, Oracle's
 # 1:1 NAT does not hairpin the packet back in — it is simply dropped. This DNAT
 # rewrites locally-originated traffic aimed at the public IP to the private NIC
 # address, so relayed candidate pairs work.
+#
+# It lives in before.rules rather than in iptables-persistent so that ufw stays
+# the single owner of the ruleset and it survives `ufw reload` and reboots.
 # --------------------------------------------------------------------------
 
 PRIVATE_IP="$(hostname -I | awk '{print $1}')"
 [[ -n "$PRIVATE_IP" ]] || die "could not determine the private IP"
 
-log "Adding the TURN hairpin DNAT ($PUBLIC_IP -> $PRIVATE_IP)"
-if $SUDO iptables -t nat -C OUTPUT -d "$PUBLIC_IP" -j DNAT --to-destination "$PRIVATE_IP" 2>/dev/null; then
-	info "already present"
+log "Installing the TURN hairpin DNAT ($PUBLIC_IP -> $PRIVATE_IP) into ufw"
+BEFORE_RULES=/etc/ufw/before.rules
+HAIRPIN_BEGIN="# BEGIN videostream TURN hairpin (managed by oracle-setup.sh)"
+HAIRPIN_END="# END videostream TURN hairpin"
+
+# Drop any previous block, then prepend a fresh one — so a changed PUBLIC_IP
+# replaces the rule instead of stacking a second one.
+$SUDO sed -i "/^${HAIRPIN_BEGIN}$/,/^${HAIRPIN_END}$/d" "$BEFORE_RULES"
+$SUDO tee /tmp/hairpin.$$ >/dev/null <<-EOF
+	${HAIRPIN_BEGIN}
+	*nat
+	:OUTPUT - [0:0]
+	-A OUTPUT -d ${PUBLIC_IP} -j DNAT --to-destination ${PRIVATE_IP}
+	COMMIT
+	${HAIRPIN_END}
+EOF
+$SUDO sh -c "cat /tmp/hairpin.$$ '$BEFORE_RULES' > '$BEFORE_RULES.new' && mv '$BEFORE_RULES.new' '$BEFORE_RULES'"
+$SUDO rm -f /tmp/hairpin.$$
+info "hairpin DNAT written to $BEFORE_RULES"
+
+# --------------------------------------------------------------------------
+# Hand INPUT over to ufw.
+# --------------------------------------------------------------------------
+
+log "Enabling ufw"
+if $SUDO ufw status | grep -q '^Status: active'; then
+	$SUDO ufw --force reload >/dev/null
+	info "ufw already active — reloaded"
 else
-	$SUDO iptables -t nat -A OUTPUT -d "$PUBLIC_IP" -j DNAT --to-destination "$PRIVATE_IP"
-	info "added"
+	# Clear Oracle's stock REJECT-terminated chain and the old hairpin so the
+	# two rulesets cannot both be live. The policy stays ACCEPT for the moment
+	# between flush and enable, which is why SSH is allowed above first.
+	$SUDO iptables -F INPUT
+	$SUDO iptables -t nat -F OUTPUT 2>/dev/null || true
+	$SUDO ufw --force enable >/dev/null
+	info "ufw enabled"
 fi
 
-log "Persisting iptables rules to /etc/iptables/rules.v4"
-$SUDO netfilter-persistent save
+# iptables-persistent would restore the old rules on top of ufw's at boot.
+if systemctl is-enabled netfilter-persistent >/dev/null 2>&1; then
+	$SUDO systemctl disable netfilter-persistent >/dev/null 2>&1 || true
+	info "disabled netfilter-persistent (ufw owns the ruleset now)"
+fi
+
+# Docker reinstalls its own chains on restart; do it after ufw rebuilt INPUT.
+$SUDO systemctl restart docker
+$SUDO ufw status verbose
 
 # --------------------------------------------------------------------------
 # 5. render the config templates

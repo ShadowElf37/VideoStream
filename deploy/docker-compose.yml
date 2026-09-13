@@ -112,3 +112,12 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+
+networks:
+  # Pin the bridge's interface name. Compose would otherwise name it
+  # br-<network id>, which changes whenever the network is recreated — and the
+  # firewall has to let this interface reach livekit on the host (tcp/7880),
+  # matched by name because ufw has no interface wildcards.
+  default:
+    driver_opts:
+      com.docker.network.bridge.name: br-videostream
