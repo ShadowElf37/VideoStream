@@ -106,11 +106,17 @@ export function Dock(p: DockProps) {
             <button
               aria-label="Movie volume"
               className={cn(
-                'h-[62px] w-6 -ml-px rounded-r-xl border-l border-hairline text-muted hover:text-text hover:bg-hover inline-flex items-center justify-center',
+                'h-[62px] w-6 -ml-px rounded-r-xl border-l border-hairline text-muted hover:text-text hover:bg-hover inline-flex flex-col items-center justify-center gap-1',
                 state.movieMuted && 'text-info',
               )}
             >
               <Volume2 className="size-3.5" />
+              {/* Mirrors the caption every other dock button carries. Without
+                  it this icon centres in the full height while the rest centre
+                  above their labels, and it sits visibly lower than the row. */}
+              <span className="text-[10.5px] leading-none" aria-hidden="true">
+                &nbsp;
+              </span>
             </button>
           }
         >

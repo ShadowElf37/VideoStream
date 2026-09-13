@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -327,6 +328,38 @@ func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {
 		// position. The player reports the real landing through OnSeeked.
 		rep.OK = true
 
+	case "vs/rm":
+		// Deleting media is host-only (enforced above) and confined to the
+		// media roots by Resolve, which is the same allowlist browsing uses.
+		// It exists because the alternative is SSHing to the box to free disk,
+		// and a 45 GB volume fills after about fifteen episodes.
+		target := str(cmd.Cmd, 1)
+		if target == "" {
+			rep.Error = "vs/rm needs a path"
+			return rep
+		}
+		resolved, err := mediafs.Resolve(c.roots, target)
+		if err != nil {
+			rep.Error = err.Error()
+			return rep
+		}
+		if st := c.player.State(); st.Path == resolved {
+			// Removing the file underneath the reader would leave playback
+			// reading a deleted inode until it ends.
+			rep.Error = "that file is playing; load something else first"
+			return rep
+		}
+		if err := c.removeQueued(resolved); err != nil {
+			rep.Error = err.Error()
+			return rep
+		}
+		if err := os.Remove(resolved); err != nil {
+			rep.Error = err.Error()
+			return rep
+		}
+		c.log.Info("house: deleted", "path", resolved)
+		rep.OK = true
+
 	case "vs/quality":
 		rep.Error = "quality is fixed when the file is pushed; re-push with a different --bitrate"
 
@@ -338,6 +371,13 @@ func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {
 		rep.Error = fmt.Sprintf("the server projector does not support %q", name)
 	}
 	return rep
+}
+
+// removeQueued drops a path from the playlist before it is deleted, so the
+// queue cannot advance onto a file that is no longer there.
+func (c *Controller) removeQueued(path string) error {
+	c.player.Dequeue(path)
+	return nil
 }
 
 // AnnounceLoaded broadcasts a file-loaded event, for playlist advances that

@@ -1,5 +1,5 @@
 import { ConnectionQuality, ParticipantEvent, type Participant } from 'livekit-client';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type RefObject } from 'react';
 
 export function useMediaQuery(query: string): boolean {
   const [match, setMatch] = useState(() => (typeof window !== 'undefined' ? window.matchMedia(query).matches : false));
@@ -50,7 +50,11 @@ export function useParticipantLive(p: Participant) {
 }
 
 /** Auto-hide helper: `visible` while the pointer moves / element focused, hides after `delay`. */
-export function useAutoHide(delay = 2500, enabled = true) {
+export function useAutoHide(
+  delay = 2500,
+  enabled = true,
+  target?: RefObject<HTMLElement | null>,
+) {
   const [visible, setVisible] = useState(true);
   const [pinned, setPinned] = useState(false);
   useEffect(() => {
@@ -66,16 +70,30 @@ export function useAutoHide(delay = 2500, enabled = true) {
     };
     arm();
     const onMove = () => arm();
-    window.addEventListener('pointermove', onMove, { passive: true });
-    window.addEventListener('pointerdown', onMove, { passive: true });
+    // Scope pointer movement to the element when one is given. Listening on
+    // the window meant moving the mouse anywhere at all — over the chat, the
+    // sidebar, outside the player entirely — pulled the transport bar back
+    // over the film.
+    const el: HTMLElement | Window = target?.current ?? window;
+    el.addEventListener('pointermove', onMove, { passive: true });
+    el.addEventListener('pointerdown', onMove, { passive: true });
+    // Keys stay window-wide: a host pressing Space wants to see what it did,
+    // wherever the pointer happens to be.
     window.addEventListener('keydown', onMove);
+    // Leaving the player hides immediately rather than waiting out the timer.
+    const onLeave = () => {
+      if (t) clearTimeout(t);
+      setVisible(false);
+    };
+    if (target?.current) target.current.addEventListener('pointerleave', onLeave);
     return () => {
       if (t) clearTimeout(t);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerdown', onMove);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerdown', onMove);
       window.removeEventListener('keydown', onMove);
+      if (target?.current) target.current.removeEventListener('pointerleave', onLeave);
     };
-  }, [delay, enabled]);
+  }, [delay, enabled, target]);
   return { visible: visible || pinned || !enabled, pin: setPinned };
 }
 

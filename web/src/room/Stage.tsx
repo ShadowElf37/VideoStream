@@ -36,7 +36,8 @@ export function Stage({
   const stageRef = useRef<HTMLDivElement>(null);
   const hasMovie = !!movie.video;
   // Nothing to obscure without a picture, so keep the bar (and its "Open…") up.
-  const bar = useAutoHide(2500, hasMovie);
+  // Scoped to the stage: the bar belongs to the player, not the page.
+  const bar = useAutoHide(1600, hasMovie, stageRef);
   const isHost = role === 'host';
 
   // mpv-style keys while the stage has focus (host only).

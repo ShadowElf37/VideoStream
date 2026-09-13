@@ -4,7 +4,7 @@ export PATH := /opt/homebrew/bin:$(PATH)
 
 PROJECTOR_TAGS := pkgconfig nolibopusfile
 
-.PHONY: all web server projector test dev-livekit dev-server dev-web clean
+.PHONY: all web server projector vspush push test dev-livekit dev-server dev-web clean
 
 all: web server projector
 
@@ -16,6 +16,22 @@ web:
 ## server: static binary (embeds whatever is in server/internal/web/dist)
 server:
 	cd server && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/server ./cmd/server
+
+## vspush: the push tool (transcode + pack + upload to the server)
+vspush:
+	go build -tags "$(PROJECTOR_TAGS)" -o projector/bin/vspush ./projector/cmd/vspush
+
+## push: transcode a file and upload it to the server's media library.
+##   make push FILE=~/Videos/ep01.mkv AID=2 SID=1
+## AID/SID are mpv track numbers (1-based, per type); SID=0 burns no subtitles.
+## HOST comes from deploy/.env if you have one, else pass HOST=user@ip.
+PUSH_DIR ?= /home/ubuntu/videostream/deploy/media
+AID ?= 0
+SID ?= 0
+push: vspush
+	@test -n "$(FILE)" || { echo "usage: make push FILE=<video> [AID=2] [SID=1] [HOST=user@host]"; exit 2; }
+	@test -n "$(HOST)" || { echo "set HOST=user@host (the server running the house projector)"; exit 2; }
+	./projector/bin/vspush --aid $(AID) --sid $(SID) --dest "$(HOST):$(PUSH_DIR)/" "$(FILE)"
 
 ## projector: cgo binary linked against system libmpv + libopus
 projector:

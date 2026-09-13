@@ -179,6 +179,19 @@ func (p *Player) Playlist() []string {
 	return append([]string(nil), p.queue...)
 }
 
+// Dequeue removes every occurrence of path from the playlist.
+func (p *Player) Dequeue(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	kept := p.queue[:0]
+	for _, q := range p.queue {
+		if q != path {
+			kept = append(kept, q)
+		}
+	}
+	p.queue = kept
+}
+
 // playNext starts the head of the queue. It reports false when the queue is
 // empty.
 func (p *Player) playNext() error {

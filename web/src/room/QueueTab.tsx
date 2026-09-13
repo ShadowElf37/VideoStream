@@ -1,4 +1,4 @@
-import { ChevronRight, Clapperboard, Folder, FolderUp, Globe, ListPlus, ListVideo, LoaderCircle, Play, Search, Server } from 'lucide-react';
+import { ChevronRight, Clapperboard, Folder, FolderUp, Globe, ListPlus, ListVideo, LoaderCircle, Play, Search, Server, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useMpv, useMpvStore } from '@/host/useMpv';
 import { api } from '@/lib/api';
@@ -83,6 +83,19 @@ export function QueueTab({ active }: { active: boolean }) {
     const name = path.split(/[\\/]/).pop() || path;
     if (r.ok) useSession.getState().toast(mode === 'replace' ? `Loading ${name}` : `Queued ${name}`, 'info', 2500);
     else useSession.getState().toast(`Load failed: ${r.error ?? 'unknown error'}`, 'error');
+  };
+
+  const remove = async (e: FsEntry) => {
+    // Deleting media is irreversible and the file may be someone else's
+    // upload, so confirm rather than trusting a hover-revealed icon.
+    if (!window.confirm(`Delete ${e.name} from the server? This cannot be undone.`)) return;
+    const r = await mpv.send(['vs/rm', e.path]);
+    if (r.ok) {
+      useSession.getState().toast(`Deleted ${e.name}`, 'info', 2500);
+      void browse(dir);
+    } else {
+      useSession.getState().toast(`Delete failed: ${r.error ?? 'unknown error'}`, 'error');
+    }
   };
 
   const crumbs = useMemo(() => {
@@ -201,7 +214,13 @@ export function QueueTab({ active }: { active: boolean }) {
           <div className="px-2 pt-1 pb-1 text-[11px] uppercase tracking-wider text-muted">Media roots</div>
         )}
         {entries.map((e) => (
-          <EntryRow key={e.path} e={e} onOpen={() => (e.dir ? void browse(e.path) : void load(e.path, 'replace'))} onAppend={() => void load(e.path, 'append')} />
+          <EntryRow
+            key={e.path}
+            e={e}
+            onOpen={() => (e.dir ? void browse(e.path) : void load(e.path, 'replace'))}
+            onAppend={() => void load(e.path, 'append')}
+            onDelete={house?.active ? () => void remove(e) : undefined}
+          />
         ))}
         {online && listing && entries.length === 0 && !loading && <div className="p-4 text-sm text-muted text-center">Nothing here{filter ? ' matches' : ''}.</div>}
       </div>
@@ -224,7 +243,19 @@ export function QueueTab({ active }: { active: boolean }) {
   );
 }
 
-function EntryRow({ e, onOpen, onAppend }: { e: FsEntry; onOpen: () => void; onAppend: () => void }) {
+function EntryRow({
+  e,
+  onOpen,
+  onAppend,
+  onDelete,
+}: {
+  e: FsEntry;
+  onOpen: () => void;
+  onAppend: () => void;
+  // Only offered for server-hosted media: deleting off someone's own desktop
+  // from a web page is not a thing this should do.
+  onDelete?: () => void;
+}) {
   const media = !e.dir && MEDIA_RE.test(e.name);
   return (
     <div className="group flex items-center gap-2 px-2 h-9 rounded-lg hover:bg-hover">
@@ -245,6 +276,13 @@ function EntryRow({ e, onOpen, onAppend }: { e: FsEntry; onOpen: () => void; onA
               <ListPlus className="size-3.5" />
             </button>
           </Tooltip>
+          {onDelete && (
+            <Tooltip label="Delete from the server">
+              <button onClick={onDelete} aria-label="Delete from the server" className="size-7 rounded-md inline-flex items-center justify-center text-muted hover:text-danger hover:bg-active">
+                <Trash2 className="size-3.5" />
+              </button>
+            </Tooltip>
+          )}
         </span>
       )}
     </div>

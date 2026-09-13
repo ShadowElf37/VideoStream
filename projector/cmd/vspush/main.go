@@ -51,6 +51,7 @@ type opts struct {
 	aid     int
 	sid     int
 	kbps    int
+	akbps   int
 	height  int
 	gopSecs float64
 	dest    string
@@ -69,6 +70,7 @@ func main() {
 	flag.IntVar(&o.aid, "aid", 0, "mpv audio track to keep, 1-based (0 = mpv's default)")
 	flag.IntVar(&o.sid, "sid", 0, "mpv subtitle track to burn in, 1-based (0 = none)")
 	flag.IntVar(&o.kbps, "bitrate", 5000, "target video bitrate in kbps")
+	flag.IntVar(&o.akbps, "audio-bitrate", 192, "audio bitrate in kbps; 192 is effectively transparent for music, 96 is plenty for speech")
 	flag.IntVar(&o.height, "height", 0, "scale to this height, preserving aspect (0 = keep source)")
 	flag.Float64Var(&o.gopSecs, "gop", 2, "seconds between keyframes; also the seek granularity and a late joiner's wait")
 	flag.StringVar(&o.dest, "dest", "", "scp destination for the finished file, e.g. user@host:/srv/media")
@@ -218,7 +220,12 @@ func transcode(ctx context.Context, log *slog.Logger, o opts, in, out string, fp
 		fmt.Sprintf("--ovcopts=profile=main,b=%dk,maxrate=%dk,bufsize=%dk,bf=0,g=%d",
 			o.kbps, o.kbps, o.kbps, gopFrames),
 		"--oac=libopus",
-		"--oacopts=b=128k",
+		// 192k by default, not 128k. The source is already lossy, so this is a
+		// second generation of loss, and it lands hardest on music — an
+		// opening theme at 128k is audibly worse than the file it came from.
+		// application=audio keeps libopus out of its speech-tuned mode, and an
+		// explicit cutoff stops it quietly band-limiting the top octave.
+		fmt.Sprintf("--oacopts=b=%dk,application=audio,cutoff=20000", o.akbps),
 		"--audio-channels=stereo",
 		"--audio-samplerate=48000",
 	}
@@ -235,7 +242,7 @@ func transcode(ctx context.Context, log *slog.Logger, o opts, in, out string, fp
 	}
 
 	log.Info("transcoding", "encoder", videoEncoder(), "aid", o.aid, "sid", o.sid,
-		"kbps", o.kbps, "gopFrames", gopFrames)
+		"kbps", o.kbps, "audioKbps", o.akbps, "gopFrames", gopFrames)
 	cmd := exec.CommandContext(ctx, o.mpv, args...)
 	cmd.Stdout = os.Stderr // mpv's progress line
 	cmd.Stderr = os.Stderr
@@ -427,7 +434,7 @@ func pack(ctx context.Context, log *slog.Logger, o opts, mkv string, hdr vsm.Hea
 		haveV = false
 		if time.Since(lastLog) > 5*time.Second {
 			lastLog = time.Now()
-			log.Info("packing", "at", (time.Duration(frame)*time.Duration(frameNS)).Round(time.Second))
+			log.Info("packing", "at", (time.Duration(frame) * time.Duration(frameNS)).Round(time.Second))
 		}
 	}
 
