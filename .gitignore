@@ -34,3 +34,7 @@ testdata/*.mkv
 # generated from templates by deploy/oracle-setup.sh (contain secrets)
 /deploy/livekit.yaml
 /deploy/ingress.yaml
+
+# built SPA copied in by `make web` (only the placeholder index.html is tracked)
+/server/internal/web/dist/*
+!/server/internal/web/dist/index.html
