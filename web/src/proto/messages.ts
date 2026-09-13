@@ -9,6 +9,7 @@ export const Topics = {
   mpvCmd: 'mpv.cmd',
   mpvReply: 'mpv.reply',
   mpvState: 'mpv.state',
+  playback: 'playback',
   mpvEvent: 'mpv.event',
 } as const;
 export type Topic = (typeof Topics)[keyof typeof Topics];
@@ -188,4 +189,54 @@ export interface TokenResponse {
 
 export interface ChatHistoryResponse {
   messages: ChatMessage[];
+}
+
+/**
+ * Where a room is in its film, for the file-on-server mode.
+ *
+ * An anchor, not a position: "media time anchorPosMs was true at server time
+ * anchorAtMs, advancing at rate". A client reconstructs
+ *
+ *   target = anchorPosMs + (clientNow + offset - anchorAtMs) * rate
+ *
+ * so every broadcast is self-sufficient and a lost one costs nothing.
+ */
+export interface PlaybackState {
+  seq: number;
+  idle: boolean;
+  mediaId: string;
+  title: string;
+  /** Signed and time-limited; clients never construct one. */
+  url: string;
+  durationMs: number;
+  paused: boolean;
+  anchorPosMs: number;
+  anchorAtMs: number;
+  rate: number;
+  /** Changes on every discontinuity: licence for a client to jump. */
+  gen: number;
+  /** The director's clock when this was built. */
+  serverNowMs: number;
+  /** The anchor evaluated at serverNowMs, for convenience. */
+  posMs: number;
+  queue: string[];
+}
+
+/** One title in the pushed library. */
+export interface MediaMeta {
+  id: string;
+  title: string;
+  source?: string;
+  durationMs: number;
+  width: number;
+  height: number;
+  fpsNum: number;
+  fpsDen: number;
+  videoCodec: string;
+  audioCodec: string;
+  sizeBytes: number;
+  audioTrack?: number;
+  subTrack?: number;
+  chapters?: Array<{ startMs: number; title?: string }>;
+  pushedAt: string;
 }

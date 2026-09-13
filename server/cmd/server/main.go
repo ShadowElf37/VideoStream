@@ -50,7 +50,13 @@ func run(logger *slog.Logger) error {
 	roomsSvc := rooms.NewService(st, cfg)
 	chatSvc := chat.NewService(st, broadcaster)
 
+	// The director's loop lives as long as the process, so it shares the
+	// signal context that shuts everything else down.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	srv := api.NewServer(cfg, roomsSvc, chatSvc, lkClient, logger)
+	srv.StartDirector(ctx)
 	handler := srv.Routes(web.Handler())
 
 	httpServer := &http.Server{
@@ -58,9 +64,6 @@ func run(logger *slog.Logger) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {

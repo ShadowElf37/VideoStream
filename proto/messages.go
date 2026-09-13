@@ -11,6 +11,7 @@ const (
 	TopicMpvCmd   = "mpv.cmd"
 	TopicMpvReply = "mpv.reply"
 	TopicMpvState = "mpv.state"
+	TopicPlayback = "playback"
 	TopicMpvEvent = "mpv.event"
 )
 
@@ -190,4 +191,44 @@ type TokenResponse struct {
 
 type ChatHistoryResponse struct {
 	Messages []ChatMessage `json:"messages"`
+}
+
+// PlaybackState is where a room is in its film, for the file-on-server mode.
+//
+// It is an anchor rather than a position: "media time AnchorPosMs was true at
+// server time AnchorAtMs, advancing at Rate". A client reconstructs
+//
+//	target = AnchorPosMs + (clientNow + offset - AnchorAtMs) * Rate
+//
+// which makes every broadcast self-sufficient — losing several in a row costs
+// nothing, because the next one still says exactly where the film is.
+type PlaybackState struct {
+	Seq  int64 `json:"seq"`
+	Idle bool  `json:"idle"`
+
+	MediaID string `json:"mediaId"`
+	Title   string `json:"title"`
+	// URL is signed and time-limited. Clients never construct one.
+	URL        string `json:"url"`
+	DurationMS int64  `json:"durationMs"`
+
+	Paused      bool    `json:"paused"`
+	AnchorPosMS int64   `json:"anchorPosMs"`
+	AnchorAtMS  int64   `json:"anchorAtMs"`
+	Rate        float64 `json:"rate"`
+	// Gen changes on every discontinuity (load, seek, pause, resume, stop).
+	// A client treats a change as licence to jump, rather than as evidence
+	// that its own estimate has drifted.
+	Gen int64 `json:"gen"`
+
+	// ServerNowMS is the director's clock at the moment this was built, so a
+	// client can estimate its offset even without a round trip.
+	ServerNowMS int64 `json:"serverNowMs"`
+
+	// PosMS is the anchor evaluated at ServerNowMS. Clients compute this
+	// themselves; it is here so logs and debug views need not.
+	PosMS int64 `json:"posMs"`
+
+	// Queue is the media ids waiting behind this one.
+	Queue []string `json:"queue"`
 }

@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/ShadowElf37/VideoStream/server/internal/chat"
 	"github.com/ShadowElf37/VideoStream/server/internal/config"
 	"github.com/ShadowElf37/VideoStream/server/internal/media"
+	"github.com/ShadowElf37/VideoStream/server/internal/playback"
 	"github.com/ShadowElf37/VideoStream/server/internal/rooms"
 )
 
@@ -22,6 +24,7 @@ type Server struct {
 	logger   *slog.Logger
 	house    houseState
 	library  *media.Library
+	director *playback.Director
 }
 
 // NewServer wires up a Server with its dependencies.
@@ -32,8 +35,18 @@ func NewServer(cfg *config.Config, roomsSvc *rooms.Service, chatSvc *chat.Servic
 	s := &Server{cfg: cfg, rooms: roomsSvc, chat: chatSvc, lkClient: lkClient, logger: logger}
 	if cfg.MediaRoot != "" {
 		s.library = media.New(cfg.MediaRoot)
+		s.director = playback.New(chat.NewLiveKitBroadcaster(lkClient), &mediaResolver{cfg: cfg, lib: s.library})
 	}
 	return s
+}
+
+// StartDirector runs the playback loop, which advances playlists when a title
+// ends and re-broadcasts periodically so late joiners converge without asking.
+// A no-op when there is no media library.
+func (s *Server) StartDirector(ctx context.Context) {
+	if s.director != nil {
+		go s.director.Run(ctx)
+	}
 }
 
 // Routes builds the full HTTP handler: the JSON API plus the embedded SPA
@@ -56,6 +69,11 @@ func (s *Server) Routes(spa http.Handler) http.Handler {
 	mux.HandleFunc("DELETE /api/media/{id}", s.requireAnySession(s.handleDeleteMedia))
 	mux.HandleFunc("GET /media/{id}/{file}", s.handleMediaFile)
 	mux.HandleFunc("GET /api/time", s.handleServerTime)
+
+	// The transport. Host-gated by session, so there is no participant to
+	// identify and no roster race to lose.
+	mux.HandleFunc("GET /api/rooms/{id}/playback", s.requireSession(s.handleGetPlayback))
+	mux.HandleFunc("POST /api/rooms/{id}/playback", s.requireSession(s.handlePlaybackCommand))
 
 	// The house projector: polled by the projector service itself, and
 	// switched on and off by the room's host.
