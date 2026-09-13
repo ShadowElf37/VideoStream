@@ -141,6 +141,13 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 		if !(c.anyoneCanPause.Load() && IsPauseCommand(cmd.Cmd)) {
 			c.log.Warn("house: rejecting mpv.cmd from non-host",
 				"identity", identity, "role", role, "cmd", cmd.Cmd)
+			// Answer the refusal. Dropping it leaves the client waiting for a
+			// reply that never comes, which looks like a hang rather than a
+			// permission problem.
+			if err := c.tx.SendData(proto.MpvReply{ID: cmd.ID, Error: "host role required"},
+				proto.TopicMpvReply, true, []string{identity}); err != nil {
+				c.log.Debug("house: refusal reply failed", "err", err)
+			}
 			return
 		}
 	}
@@ -150,10 +157,15 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 	}
 }
 
-// roleOf prefers the participant the packet arrived with and falls back to the
-// room roster. The roster lookup alone is not enough: a command can arrive
-// before the SDK has the sender in its participant list, and the role then
-// reads as empty, which rejected the host's own commands.
+// roleOf works out who sent a command.
+//
+// The packet's own participant is authoritative when it is there, but for the
+// first commands after a join it is nil and the room roster does not have the
+// sender yet either — the host's opening vs/fs.list was being rejected with an
+// empty role about 300 ms before the same client's next command was accepted.
+// Rather than reject a host for arriving early, give the roster a moment to
+// catch up. This only ever waits when the role is genuinely unknown, which is
+// rare and brief.
 func (c *Controller) roleOf(params lksdk.DataReceiveParams, identity string) string {
 	if params.Sender != nil {
 		if role := publish.RoleOf(params.Sender); role != "" {
@@ -163,8 +175,21 @@ func (c *Controller) roleOf(params lksdk.DataReceiveParams, identity string) str
 	if identity == "" {
 		return ""
 	}
-	return publish.RoleOf(c.tx.Participant(identity))
+	deadline := time.Now().Add(rosterWait)
+	for {
+		if role := publish.RoleOf(c.tx.Participant(identity)); role != "" {
+			return role
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
+
+// rosterWait bounds how long an unknown sender is given to appear in the
+// roster before the command is refused.
+const rosterWait = 2 * time.Second
 
 // IsPauseCommand matches exactly a pause toggle, so a viewer allowed to pause
 // cannot reach anything else. Kept in step with the desktop projector's rule.
