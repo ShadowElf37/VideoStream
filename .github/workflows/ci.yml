@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.27"
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.27"
       - run: ${{ matrix.setup }}
       - run: cd projector && go vet -tags "pkgconfig nolibopusfile" ./... && go test -tags "pkgconfig nolibopusfile" ./...
       - run: cd projector && go build -tags "pkgconfig nolibopusfile" -o bin/projector-${{ runner.os }}-${{ runner.arch }} ./cmd/projector

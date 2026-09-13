@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -94,9 +93,4 @@ func defaultLiveKitURL(publicURL string) string {
 		return "ws://localhost:7880"
 	}
 	return "wss://" + strings.TrimSuffix(u.Host, "/")
-}
-
-// DBDir returns the directory containing DBPath.
-func (c *Config) DBDir() string {
-	return filepath.Dir(c.DBPath)
 }
