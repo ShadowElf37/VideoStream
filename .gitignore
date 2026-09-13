@@ -1,0 +1,30 @@
+# Go
+/server/bin/
+/projector/bin/
+*.exe
+*.test
+*.out
+
+# Node / web
+node_modules/
+/web/dist/
+/web/dev-dist/
+.vite/
+*.tsbuildinfo
+
+# Deploy secrets & local state
+/deploy/.env
+/deploy/data/
+/deploy/caddy_data/
+/deploy/caddy_config/
+*.pem
+*.key
+
+# Local runtime
+*.db
+*.db-*
+*.sock
+*.log
+.DS_Store
+/tmp/
+/scratch/
