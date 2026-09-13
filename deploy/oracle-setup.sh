@@ -181,6 +181,37 @@ allow udp 30000:30100  # TURN relay allocation range
 # allow tcp 1935
 # allow udp 7885
 
+# LiveKit's signalling/Twirp port, reachable ONLY from Docker's bridge networks.
+#
+# livekit runs with network_mode: host, so caddy and app (on the bridge) reach
+# it through the host-gateway address — and that traffic arrives on a bridge
+# interface and traverses INPUT, where the REJECT above answers it with
+# icmp-host-prohibited. Caddy then fails every /rtc and /twirp request with
+# "dial tcp 172.17.0.1:7880: connect: no route to host" and the app cannot
+# create rooms at all.
+#
+# Matching on the incoming interface (docker0 and compose's br-*) rather than a
+# source CIDR keeps 7880 unreachable from the internet, which is the point of
+# leaving it out of the VCN security list.
+allow_docker() { # allow_docker <tcp|udp> <port>
+	local proto="$1" port="$2" line iface
+	for iface in docker0 'br+'; do
+		if $SUDO iptables -C INPUT -i "$iface" -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null; then
+			info "$proto/$port on $iface already allowed"
+			continue
+		fi
+		line="$(reject_line)"
+		if [[ -n "$line" ]]; then
+			$SUDO iptables -I INPUT "$line" -i "$iface" -p "$proto" --dport "$port" -j ACCEPT
+		else
+			$SUDO iptables -A INPUT -i "$iface" -p "$proto" --dport "$port" -j ACCEPT
+		fi
+		info "$proto/$port allowed from $iface (containers -> host)"
+	done
+}
+
+allow_docker tcp 7880
+
 # --------------------------------------------------------------------------
 # 4. TURN hairpin
 #

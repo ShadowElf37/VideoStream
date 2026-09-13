@@ -316,6 +316,7 @@ lk room join --publish-demo --url ws://localhost:7880 \
 |---|---|
 | Caddy retries ACME forever | DNS not propagated, or TCP 80 closed in the VCN |
 | Page loads, joining hangs | `/rtc*` not proxied, or 7880 not listening on the host (`sudo ss -lntp \| grep 7880`) |
+| Caddy logs `dial tcp 172.17.0.1:7880: no route to host`, Twirp 502s | the INPUT REJECT is eating container→host traffic; 7880 must be allowed on `docker0`/`br+` (oracle-setup.sh does this) |
 | Video connects only on TCP | UDP 7882 blocked — check the VCN rule *and* `sudo iptables -L INPUT -n --line-numbers` for a rule above the REJECT |
 | Remote candidates are `10.0.0.x` | `rtc.node_ip` / `use_external_ip` wrong, or `PUBLIC_IP` stale after an IP change |
 | TURN never relays | hairpin DNAT missing (`sudo iptables -t nat -L OUTPUT -n`), or UDP 30000–30100 closed |
