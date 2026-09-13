@@ -22,14 +22,15 @@ export function ViewerBar({ visible }: { visible: boolean }) {
     if (cooldown) return;
     setCooldown(true);
     setTimeout(() => setCooldown(false), 4000);
-    await publish(room, Topics.react, { emoji: '⏸️' }, { reliable: false });
-    useSession.getState().addReaction('⏸️', 'you');
     if (settings?.anyoneCanPause) {
+      // We can pause directly, so the paused stage is the indicator — asking
+      // the room to pause as well would just be noise.
       const r = await mpv.send(['cycle', 'pause']);
       if (!r.ok) useSession.getState().toast('The projector ignored that (host-only)', 'warn');
-    } else {
-      useSession.getState().toast('Asked the host to pause', 'info', 2500);
+      return;
     }
+    await publish(room, Topics.react, { emoji: '⏸️' }, { reliable: false });
+    useSession.getState().requestPause('You');
   };
 
   if (!state || state.idle) return null;

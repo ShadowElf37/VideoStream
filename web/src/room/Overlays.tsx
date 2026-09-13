@@ -100,9 +100,39 @@ function ToastItem({ t }: { t: Toast }) {
 
 export function PausedGlyph() {
   return (
-    <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-      <div className="anim-pop size-20 rounded-full bg-black/45 backdrop-blur-md flex items-center justify-center text-white">
-        <Pause className="size-9" fill="currentColor" />
+    <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+      {/* Red edge glow: readable from across the room, and from the corner of
+          your eye when you are not looking straight at the stage. */}
+      <div className="absolute inset-0 ring-inset ring-[6px] ring-danger/70 shadow-[inset_0_0_120px_rgba(239,83,80,0.35)]" />
+      <div className="anim-pop flex flex-col items-center gap-3">
+        <div className="pause-pulse size-24 rounded-full bg-danger flex items-center justify-center text-white shadow-[0_6px_28px_rgba(0,0,0,0.55)]">
+          <Pause className="size-11" fill="currentColor" />
+        </div>
+        <span className="text-danger text-sm font-semibold tracking-[0.22em] uppercase drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+          Paused
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** A viewer asked for a pause. Loud and red, and deliberately not one of the
+ *  floating reactions — those drift past in two seconds and get lost among
+ *  the hearts, which is exactly how pause requests were being missed. */
+export function PauseRequestBanner() {
+  const req = useSession((s) => s.pauseRequest);
+  const clear = useSession((s) => s.clearPauseRequest);
+  useEffect(() => {
+    if (!req) return;
+    const t = setTimeout(() => clear(req.id), 6000);
+    return () => clearTimeout(t);
+  }, [req, clear]);
+  if (!req) return null;
+  return (
+    <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex justify-center p-3">
+      <div className="anim-pop pause-pulse flex items-center gap-2.5 rounded-xl bg-danger px-4 py-2.5 text-white shadow-[0_6px_28px_rgba(0,0,0,0.55)]">
+        <Pause className="size-5 shrink-0" fill="currentColor" />
+        <span className="text-[14px] font-semibold">{req.from} asked to pause</span>
       </div>
     </div>
   );

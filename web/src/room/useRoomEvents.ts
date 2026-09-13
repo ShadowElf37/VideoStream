@@ -49,8 +49,11 @@ export function useRoomEvents(room: Room | null) {
         case Topics.react: {
           const r = decode<ReactMessage>(payload);
           if (r && participant) {
-            session().addReaction(r.emoji, displayName(participant));
-            if (r.emoji === '⏸️' && session().role === 'host') session().toast(`${displayName(participant)} asked to pause`, 'warn', 5000);
+            // A pause request gets its own red banner for everyone rather than
+            // a floating emoji plus a host-only toast: as a reaction it drifted
+            // past in 2.6s among the hearts and was routinely missed.
+            if (r.emoji === '⏸️') session().requestPause(displayName(participant));
+            else session().addReaction(r.emoji, displayName(participant));
           }
           break;
         }

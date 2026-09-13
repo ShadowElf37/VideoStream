@@ -230,17 +230,20 @@ func TestFullRoomFlow(t *testing.T) {
 		t.Fatalf("viewer settings patch: status %d, body %s", viewerPatchRec.Code, viewerPatchRec.Body.String())
 	}
 
-	// Settings PATCH: host allowed.
+	// Settings PATCH: host allowed. Patch to the opposite of whatever the
+	// default is — only an actual change is broadcast, so patching to the
+	// default value would assert nothing below.
+	toggled := !hostTok.Settings.AnyoneCanPause
 	hostPatchRec := doJSON(t, handler, http.MethodPatch, "/api/rooms/"+created.ID+"/settings", map[string]any{
-		"anyoneCanPause": true,
+		"anyoneCanPause": toggled,
 	}, hostTok.Session)
 	if hostPatchRec.Code != http.StatusOK {
 		t.Fatalf("host settings patch: status %d, body %s", hostPatchRec.Code, hostPatchRec.Body.String())
 	}
 	var newSettings proto.RoomSettings
 	decodeBody(t, hostPatchRec, &newSettings)
-	if !newSettings.AnyoneCanPause {
-		t.Error("expected anyoneCanPause=true after patch")
+	if newSettings.AnyoneCanPause != toggled {
+		t.Errorf("anyoneCanPause = %v after patch, want %v", newSettings.AnyoneCanPause, toggled)
 	}
 
 	// Broadcaster should have seen: chat message, settings, and a system message.

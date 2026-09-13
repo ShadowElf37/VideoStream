@@ -183,6 +183,20 @@ body {
 .anim-spin {
   animation: vs-spin 900ms linear infinite;
 }
+@keyframes vs-pause-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 70%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 12px transparent;
+  }
+}
+/* The pause indicators breathe so they read as "something is waiting on you"
+   rather than as a static badge. Stilled under prefers-reduced-motion below. */
+.pause-pulse {
+  animation: vs-pause-pulse 1.6s ease-out infinite;
+}
 .speaking-ring {
   box-shadow: 0 0 0 2px var(--accent);
   animation: vs-pulse-ring 1.2s ease-out infinite;

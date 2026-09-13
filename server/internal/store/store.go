@@ -101,7 +101,7 @@ func (s *Store) Close() error {
 // DefaultSettings returns the settings applied to newly created rooms.
 func DefaultSettings() proto.RoomSettings {
 	return proto.RoomSettings{
-		AnyoneCanPause:    false,
+		AnyoneCanPause:    true,
 		DeafenImpliesMute: false,
 		MaxPreset:         proto.Preset1080pHigh,
 	}

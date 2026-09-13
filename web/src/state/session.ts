@@ -23,6 +23,14 @@ export interface Reaction {
   x: number;
 }
 
+/** A viewer asking for a pause. Shown as its own loud banner, not as a
+ *  floating emoji among the reactions — it is a request aimed at someone,
+ *  and it was too easy to miss drifting past with the hearts. */
+export interface PauseRequest {
+  id: number;
+  from: string;
+}
+
 interface SessionStore {
   roomId: string;
   room: RoomInfo | null;
@@ -37,6 +45,7 @@ interface SessionStore {
   presence: Record<string, PresenceMessage>;
   toasts: Toast[];
   reactions: Reaction[];
+  pauseRequest: PauseRequest | null;
   isFullscreen: boolean;
   audioBlocked: boolean;
 
@@ -52,6 +61,8 @@ interface SessionStore {
   dismissToast: (id: number) => void;
   addReaction: (emoji: string, from: string) => void;
   removeReaction: (id: number) => void;
+  requestPause: (from: string) => void;
+  clearPauseRequest: (id: number) => void;
   setFullscreen: (v: boolean) => void;
   setAudioBlocked: (v: boolean) => void;
   reset: () => void;
@@ -72,6 +83,7 @@ export const useSession = create<SessionStore>()((set) => ({
   presence: {},
   toasts: [],
   reactions: [],
+  pauseRequest: null,
   isFullscreen: false,
   audioBlocked: false,
 
@@ -95,6 +107,9 @@ export const useSession = create<SessionStore>()((set) => ({
       reactions: [...s.reactions.slice(-24), { id: seq++, emoji, from, x: 8 + Math.random() * 84 }],
     })),
   removeReaction: (id) => set((s) => ({ reactions: s.reactions.filter((r) => r.id !== id) })),
+  requestPause: (from) => set({ pauseRequest: { id: seq++, from } }),
+  // Guarded by id so a later request's timer cannot clear an earlier one's banner.
+  clearPauseRequest: (id) => set((s) => (s.pauseRequest?.id === id ? { pauseRequest: null } : {})),
   setFullscreen: (isFullscreen) => set({ isFullscreen }),
   setAudioBlocked: (audioBlocked) => set({ audioBlocked }),
   reset: () =>
@@ -106,6 +121,7 @@ export const useSession = create<SessionStore>()((set) => ({
       presence: {},
       toasts: [],
       reactions: [],
+      pauseRequest: null,
       audioBlocked: false,
     }),
 }));

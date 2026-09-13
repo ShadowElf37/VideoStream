@@ -6,7 +6,7 @@ import { usePrefs } from '@/state/prefs';
 import { useSession } from '@/state/session';
 import { HostBar } from './HostBar';
 import { MovieVideo } from './MovieVideo';
-import { BufferingGlyph, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
+import { BufferingGlyph, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerBar } from './ViewerBar';
 import { useAutoHide } from './hooks';
@@ -109,6 +109,7 @@ export function Stage({
       {hasMovie && paused && !stalled && <PausedGlyph />}
       {hasMovie && stalled && !paused && <BufferingGlyph />}
 
+      <PauseRequestBanner />
       <QualityGlyph />
       {statsOverlay && <StatsOverlay movie={movie} />}
       <Toasts />
