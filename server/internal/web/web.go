@@ -3,11 +3,13 @@
 package web
 
 import (
+	"bytes"
 	"embed"
 	"io/fs"
 	"net/http"
 	"path"
 	"strings"
+	"time"
 )
 
 //go:embed dist
@@ -23,6 +25,18 @@ func Handler() http.Handler {
 		panic(err) // the dist directory is embedded at build time; this can't fail
 	}
 	fileServer := http.FileServer(http.FS(sub))
+	index, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		panic(err)
+	}
+	// Serve index.html bytes directly: http.FileServer redirects any path
+	// ending in "/index.html" to "./", which turns the SPA fallback for
+	// /r/<id> into a redirect loop.
+	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(index))
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -31,8 +45,9 @@ func Handler() http.Handler {
 		}
 
 		cleaned := path.Clean(strings.TrimPrefix(r.URL.Path, "/"))
-		if cleaned == "." {
-			cleaned = "index.html"
+		if cleaned == "." || cleaned == "index.html" {
+			serveIndex(w, r)
+			return
 		}
 
 		if strings.HasPrefix(cleaned, "assets/") {
@@ -43,10 +58,7 @@ func Handler() http.Handler {
 
 		if _, err := fs.Stat(sub, cleaned); err != nil {
 			// No such file: SPA fallback to index.html for client-side routing.
-			r2 := new(http.Request)
-			*r2 = *r
-			r2.URL.Path = "/index.html"
-			fileServer.ServeHTTP(w, r2)
+			serveIndex(w, r)
 			return
 		}
 		fileServer.ServeHTTP(w, r)
