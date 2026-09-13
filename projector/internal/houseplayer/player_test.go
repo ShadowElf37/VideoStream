@@ -82,9 +82,10 @@ func newPlayer(t *testing.T) (*Player, *capture) {
 	return New(slog.New(slog.NewTextHandler(io.Discard, nil)), c), c
 }
 
-// Timestamps must be derived from the absolute frame index and sample counter,
-// never accumulated, or a long film drifts.
-func TestTimestampsAreAbsoluteAndMonotonic(t *testing.T) {
+// Frame spacing must be exact. 24 fps at a 90 kHz clock is 3750 ticks per
+// frame with no remainder, so any rounding or accumulation error shows up
+// here immediately as 3749.
+func TestVideoFrameSpacingIsExact(t *testing.T) {
 	p, cap := newPlayer(t)
 	if err := p.Load(build(t, 3), "replace"); err != nil {
 		t.Fatalf("Load: %v", err)
@@ -98,7 +99,6 @@ func TestTimestampsAreAbsoluteAndMonotonic(t *testing.T) {
 		t.Fatalf("only %d video frames published; expected playback to progress", len(video))
 	}
 	for i, ts := range video {
-		// 24 fps at a 90 kHz clock is exactly 3750 ticks per frame.
 		if want := uint32(i * 3750); ts != want {
 			t.Fatalf("video ts[%d] = %d, want %d", i, ts, want)
 		}
@@ -167,7 +167,11 @@ func TestPauseStopsOutput(t *testing.T) {
 
 // A seek must land on a keyframe at or before the target: anywhere else and
 // the decoder has no reference frame.
-func TestSeekLandsOnKeyframeAndKeepsTimestampsOrdered(t *testing.T) {
+//
+// Note what this does NOT assert: that the RTP timestamp reflects the seek
+// target. Timestamps track what has been sent, not where we are in the file,
+// which is the whole point of the output clock.
+func TestSeekLandsOnKeyframe(t *testing.T) {
 	p, cap := newPlayer(t)
 	if err := p.Load(build(t, 10), "replace"); err != nil {
 		t.Fatal(err)
@@ -184,11 +188,12 @@ func TestSeekLandsOnKeyframeAndKeepsTimestampsOrdered(t *testing.T) {
 	if len(video) == 0 {
 		t.Fatal("nothing published")
 	}
-	last := video[len(video)-1]
-	// 6 s at 24 fps is frame 144; the IDR at or before it is frame 144 itself.
-	if want := uint32(144 * 3750); last < want {
-		t.Errorf("after seeking to 6s the latest video ts is %d, want >= %d", last, want)
+	for i := 1; i < len(video); i++ {
+		if video[i] < video[i-1] {
+			t.Fatalf("video ts went backwards across the seek: %d then %d", video[i-1], video[i])
+		}
 	}
+	// 6 s at 24 fps is frame 144, which is itself an IDR here.
 	if pos := p.State().PosMS; pos < 5500 {
 		t.Errorf("position after seek = %d ms, want >= 5500", pos)
 	}
@@ -312,5 +317,99 @@ func TestAppendRejectsUnplayableFile(t *testing.T) {
 	}
 	if q := p.Playlist(); len(q) != 0 {
 		t.Errorf("playlist = %v, want the bad file rejected", q)
+	}
+}
+
+// RTP timestamps must never go backwards. Deriving them from the file position
+// meant a backward seek re-sent timestamps the receiver had already seen, and
+// the decoder dropped everything until the stream caught up: seeking to the
+// start 4 s in froze the picture for 4 s while the audio played on.
+func TestTimestampsNeverGoBackwardsAcrossSeek(t *testing.T) {
+	p, cap := newPlayer(t)
+	if err := p.Load(build(t, 10), "replace"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	time.Sleep(400 * time.Millisecond)
+	p.SeekMS(6000) // forward
+	time.Sleep(300 * time.Millisecond)
+	p.SeekMS(0) // and back to the very start, the case that broke
+	time.Sleep(400 * time.Millisecond)
+
+	video, audio := cap.snapshot()
+	if len(video) < 6 {
+		t.Fatalf("only %d video frames; expected playback across both seeks", len(video))
+	}
+	for i := 1; i < len(video); i++ {
+		if video[i] < video[i-1] {
+			t.Fatalf("video ts went backwards at %d: %d then %d", i, video[i-1], video[i])
+		}
+	}
+	for i := 1; i < len(audio); i++ {
+		if audio[i] < audio[i-1] {
+			t.Fatalf("audio ts went backwards at %d: %d then %d", i, audio[i-1], audio[i])
+		}
+	}
+}
+
+// Seeks are asynchronous and land on a keyframe, so the controller cannot
+// know the landing point: announcing the requested position reported the
+// pre-seek one ("seeked to 0:04" when seeking to the start).
+func TestOnSeekedReportsWhereItLanded(t *testing.T) {
+	p, _ := newPlayer(t)
+	if err := p.Load(build(t, 10), "replace"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var landed []int64
+	p.OnSeeked = func(ms int64) { mu.Lock(); landed = append(landed, ms); mu.Unlock() }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	time.Sleep(300 * time.Millisecond)
+	p.SeekMS(0)
+	time.Sleep(400 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(landed) == 0 {
+		t.Fatal("OnSeeked never fired, so the room is never told where the seek went")
+	}
+	if got := landed[len(landed)-1]; got != 0 {
+		t.Errorf("reported landing at %d ms, want 0", got)
+	}
+	if pos := p.State().PosMS; pos > 1000 {
+		t.Errorf("position after seeking to the start = %d ms", pos)
+	}
+}
+
+// Timestamps have to keep climbing across a file change too: the tracks are
+// the same, so restarting the clock per episode would stall every viewer.
+func TestTimestampsContinueAcrossPlaylistAdvance(t *testing.T) {
+	p, cap := newPlayer(t)
+	if err := p.Load(build(t, 1), "replace"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Load(build(t, 3), "append"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+	time.Sleep(1800 * time.Millisecond)
+
+	video, _ := cap.snapshot()
+	for i := 1; i < len(video); i++ {
+		if video[i] < video[i-1] {
+			t.Fatalf("video ts went backwards at the file change: %d then %d", video[i-1], video[i])
+		}
+	}
+	if p.State().Path == "" {
+		t.Error("nothing playing after the advance")
 	}
 }

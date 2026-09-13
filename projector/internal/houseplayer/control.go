@@ -137,7 +137,19 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 		c.log.Warn("house: bad mpv.cmd payload", "err", err)
 		return
 	}
-	if role := c.roleOf(params, identity); role != proto.RoleHost {
+	// Dispatch off the SDK's packet goroutine: resolving a role can wait on
+	// the roster, and blocking here would stall every later packet behind it.
+	go c.handle(cmd, params, identity, time.Now())
+}
+
+// handle runs a command and records how long each stage took. The timing is
+// logged because "the projector felt slow" is otherwise impossible to pin on
+// a component: it separates time spent working out who sent the command from
+// time spent acting on it, and both from everything downstream.
+func (c *Controller) handle(cmd proto.MpvCommand, params lksdk.DataReceiveParams, identity string, arrived time.Time) {
+	role := c.roleOf(params, identity)
+	authDone := time.Now()
+	if role != proto.RoleHost {
 		if !(c.anyoneCanPause.Load() && IsPauseCommand(cmd.Cmd)) {
 			c.log.Warn("house: rejecting mpv.cmd from non-host",
 				"identity", identity, "role", role, "cmd", cmd.Cmd)
@@ -152,6 +164,12 @@ func (c *Controller) OnDataPacket(data lksdk.DataPacket, params lksdk.DataReceiv
 		}
 	}
 	reply := c.dispatch(cmd)
+	done := time.Now()
+	c.log.Info("house: command handled",
+		"cmd", cmd.Cmd,
+		"authMs", authDone.Sub(arrived).Milliseconds(),
+		"actMs", done.Sub(authDone).Milliseconds(),
+		"totalMs", done.Sub(arrived).Milliseconds())
 	if err := c.tx.SendData(reply, proto.TopicMpvReply, true, []string{identity}); err != nil {
 		c.log.Warn("house: reply failed", "err", err)
 	}
@@ -183,13 +201,16 @@ func (c *Controller) roleOf(params lksdk.DataReceiveParams, identity string) str
 		if time.Now().After(deadline) {
 			return ""
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
 // rosterWait bounds how long an unknown sender is given to appear in the
-// roster before the command is refused.
-const rosterWait = 2 * time.Second
+// roster. It only ever elapses for a command sent in the first moments of a
+// join, and since commands are dispatched on their own goroutine it delays
+// nothing else. Short, because a host who waits longer than this for a pause
+// would rather be told it failed.
+const rosterWait = 750 * time.Millisecond
 
 // IsPauseCommand matches exactly a pause toggle, so a viewer allowed to pause
 // cannot reach anything else. Kept in step with the desktop projector's rule.
@@ -301,7 +322,9 @@ func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {
 			target = st.Header.DurationMS
 		}
 		c.player.SeekMS(target)
-		c.event("seek", "")
+		// No event here: the seek is asynchronous and lands on the keyframe at
+		// or before the target, so anything announced now would be the old
+		// position. The player reports the real landing through OnSeeked.
 		rep.OK = true
 
 	case "vs/quality":
@@ -321,6 +344,9 @@ func (c *Controller) dispatch(cmd proto.MpvCommand) proto.MpvReply {
 // no command asked for.
 func (c *Controller) AnnounceLoaded(title string) { c.event("file-loaded", title) }
 
+// AnnounceSeeked reports where a seek actually landed.
+func (c *Controller) AnnounceSeeked(posMS int64) { c.eventAt("seek", "", posMS) }
+
 func (c *Controller) pauseEvent(paused bool) {
 	if paused {
 		c.event("pause", "")
@@ -330,12 +356,15 @@ func (c *Controller) pauseEvent(paused bool) {
 }
 
 func (c *Controller) event(kind, text string) {
-	st := c.player.State()
+	c.eventAt(kind, text, c.player.State().PosMS)
+}
+
+func (c *Controller) eventAt(kind, text string, posMS int64) {
 	ev := proto.MpvEvent{
 		Type: kind,
 		Text: text,
 		TS:   time.Now().UnixMilli(),
-		Data: map[string]any{"timePos": float64(st.PosMS) / 1000},
+		Data: map[string]any{"timePos": float64(posMS) / 1000},
 	}
 	if err := c.tx.SendData(ev, proto.TopicMpvEvent, true, nil); err != nil {
 		c.log.Debug("house: event broadcast failed", "err", err)

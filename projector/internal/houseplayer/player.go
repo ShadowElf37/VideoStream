@@ -6,12 +6,20 @@
 // on a machine with a hardware encoder; here we only read records, wait until
 // each one is due, and hand it to the packetizer.
 //
-// The clock is the wall clock, anchored at the moment playback starts. The
-// desktop projector derives its timeline from mpv's audio consumption because
-// mpv is a live decoder that can fall behind; a file cannot, so there is
-// nothing to follow and a monotonic timer is both simpler and exact.
-// Timestamps stay absolute, computed from the frame index and sample counter,
-// so they never accumulate error and never go backwards across a seek.
+// There are two clocks, and keeping them apart is the whole trick.
+//
+// Pacing runs off the wall clock against the file's own timeline: each record
+// is due at its position in the file, so playback tracks real time and a seek
+// simply re-anchors. The desktop projector instead follows mpv's audio
+// consumption, because mpv is a live decoder that can fall behind; a file
+// cannot, so there is nothing to follow.
+//
+// RTP timestamps run off a separate counter of what has actually been sent,
+// which only ever moves forward. Pause, seek and changing file are gaps in it,
+// never rewinds. Deriving them from the file position instead — the obvious
+// thing, since the file says exactly when each frame belongs — is wrong:
+// seeking backwards then re-sends timestamps the receiver has already seen and
+// it drops everything until the stream catches up.
 package houseplayer
 
 import (
@@ -57,9 +65,31 @@ type Player struct {
 	// down between episodes; only a genuine resolution change needs it.
 	pubW, pubH int
 
+	// outSamples is the output clock: 48 kHz samples actually put on the wire.
+	//
+	// RTP timestamps come from here and not from the file position, because
+	// they must only ever move forward. Stamping from the file meant seeking
+	// backwards sent timestamps a receiver had already seen, and the decoder
+	// discarded everything until the stream caught back up — a seek to the
+	// start 4 s in froze the picture for 4 s. Pause, seek and switching files
+	// are all just gaps in this clock.
+	//
+	// Only the Run goroutine touches it, and nothing ever resets it.
+	outSamples int64
+
+	// lastVideoNS is the output time of the most recent video frame, carried
+	// across segments so a re-anchor can never place the next frame behind it.
+	lastVideoNS int64
+
 	// OnAdvance is called when the playlist moves on by itself, so the
 	// controller can tell the room what is playing now.
 	OnAdvance func(title string)
+
+	// OnSeeked reports where a seek actually landed. The controller cannot
+	// work this out itself: seeks are asynchronous and land on the keyframe
+	// at or before the target, so announcing the requested position was
+	// reporting the pre-seek one instead.
+	OnSeeked func(posMS int64)
 
 	wake chan struct{}
 }
@@ -289,7 +319,21 @@ func (p *Player) playOne(ctx context.Context) bool {
 	// ever maps onto the media while it is actually moving.
 	startPos := p.currentPosMS()
 	epoch := time.Now()
-	frameNS := hdr.FrameDurationNS()
+	// Video timing is exact within a segment and monotonic across them.
+	//
+	// segFileNS is where this segment starts in the file; outAnchorNS is the
+	// output time that maps to. A frame's output time is then simply the
+	// anchor plus its distance into the segment, which keeps the spacing of
+	// the source (a steady 3750 ticks at 24 fps) instead of snapping every
+	// frame to the nearest 20 ms audio packet.
+	//
+	// The anchor never goes below the last frame already sent, so no seek or
+	// file change can walk the clock backwards.
+	segFileNS := startPos * 1e6
+	outAnchorNS := p.outSamples * 1e9 / 48000
+	if p.lastVideoNS > outAnchorNS {
+		outAnchorNS = p.lastVideoNS
+	}
 
 	for {
 		if ctx.Err() != nil {
@@ -313,9 +357,17 @@ func (p *Player) playOne(ctx context.Context) bool {
 			}
 			p.setPos(k.MS)
 			startPos = k.MS
+			segFileNS = k.MS * 1e6
+			outAnchorNS = p.outSamples * 1e9 / 48000
+			if p.lastVideoNS > outAnchorNS {
+				outAnchorNS = p.lastVideoNS
+			}
 			epoch = time.Now()
 			p.log.Info("house: seeked", "to", time.Duration(seek)*time.Millisecond,
 				"landed", time.Duration(k.MS)*time.Millisecond)
+			if p.OnSeeked != nil {
+				p.OnSeeked(k.MS)
+			}
 			continue
 		}
 
@@ -352,15 +404,22 @@ func (p *Player) playOne(ctx context.Context) bool {
 		}
 
 		_, samples := r.Position()
-		var dueMS int64
+		// Due times in nanoseconds: at 2.5 ms Opus frames and 23.976 fps,
+		// truncating to milliseconds loses enough to drift over a film.
+		var dueNS int64
 		switch rec.Kind {
 		case vsm.KindVideo:
-			dueMS = int64(rec.Frame) * frameNS / 1e6
+			// Computed from the frame index against the exact rational rate,
+			// never as index x a pre-truncated frame duration: truncating
+			// 1/24 s to whole nanoseconds once and multiplying loses a tick a
+			// frame, which is about two seconds of drift over a feature.
+			dueNS = int64(rec.Frame) * int64(hdr.FPSDen) * 1e9 / int64(hdr.FPSNum)
 		case vsm.KindAudio:
 			// samples already includes this packet, so back it out to get the
 			// packet's own start time.
-			dueMS = (samples - int64(rec.Samples)) * 1000 / int64(audioRate(hdr))
+			dueNS = (samples - int64(rec.Samples)) * 1e9 / int64(audioRate(hdr))
 		}
+		dueMS := dueNS / 1e6
 		if wait := time.Until(epoch.Add(time.Duration(dueMS-startPos) * time.Millisecond)); wait > 0 {
 			select {
 			case <-ctx.Done():
@@ -375,16 +434,24 @@ func (p *Player) playOne(ctx context.Context) bool {
 
 		switch rec.Kind {
 		case vsm.KindVideo:
-			ts := uint32(int64(rec.Frame) * 90000 * int64(hdr.FPSDen) / int64(hdr.FPSNum))
+			outNS := outAnchorNS + (dueNS - segFileNS)
+			if outNS < p.lastVideoNS {
+				outNS = p.lastVideoNS
+			}
+			p.lastVideoNS = outNS
+			// Rounded, not truncated: at 24 fps truncation lands every frame a
+			// tick early and the error compounds.
+			ts := uint32((outNS*90000 + 5e8) / 1e9)
 			if err := p.sink.WriteVideo(rec.Data, ts); err != nil {
 				p.log.Warn("house: video write failed", "err", err)
 			}
 			p.setPos(dueMS)
 		case vsm.KindAudio:
-			ts := uint32(samples - int64(rec.Samples))
+			ts := uint32(p.outSamples)
 			if err := p.sink.WriteAudio(rec.Data, ts); err != nil {
 				p.log.Warn("house: audio write failed", "err", err)
 			}
+			p.outSamples += int64(rec.Samples)
 		}
 	}
 }
