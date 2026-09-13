@@ -36,7 +36,10 @@ services:
       - "host.docker.internal:host-gateway"
 
   livekit:
-    image: livekit/livekit-server:v1
+    # LiveKit publishes minor-series tags (v1.13), not a bare `v1` — pinning to
+    # the series takes patch fixes on an explicit `docker compose pull` without
+    # a surprise minor bump mid-season.
+    image: livekit/livekit-server:v1.13
     container_name: videostream-livekit
     restart: unless-stopped
     network_mode: host
@@ -94,7 +97,7 @@ services:
     command: ["redis-server", "--bind", "127.0.0.1", "--port", "6379"]
 
   ingress:
-    image: livekit/ingress:v1
+    image: livekit/ingress:v1.5
     container_name: videostream-ingress
     profiles: [ingress]
     restart: unless-stopped

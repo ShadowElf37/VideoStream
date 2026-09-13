@@ -5,10 +5,10 @@ One `docker compose` stack on a single Oracle Cloud Ampere A1 instance:
 | Service | Image | Network | Role |
 |---|---|---|---|
 | `caddy` | `caddy:2` | bridge, publishes 80/443 | TLS (Let's Encrypt), reverse proxy, HTTP/3 |
-| `livekit` | `livekit/livekit-server:v1` | **host** | SFU + embedded TURN |
+| `livekit` | `livekit/livekit-server:v1.13` | **host** | SFU + embedded TURN |
 | `app` | built here from `server/Dockerfile` | bridge | rooms, tokens, chat history, serves the web build |
 | `redis` | `redis:7-alpine` | host | *(profile `ingress`)* job queue for ingress |
-| `ingress` | `livekit/ingress:v1` | host | *(profile `ingress`)* WHIP/RTMP publishing |
+| `ingress` | `livekit/ingress:v1.5` | host | *(profile `ingress`)* WHIP/RTMP publishing |
 
 Two things are worth knowing before reading anything else:
 
