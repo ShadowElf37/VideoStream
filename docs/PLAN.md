@@ -184,3 +184,13 @@ Toolchain on this Mac: ffmpeg 8.1.2, node 25, Rust unused; needs `brew install g
 - Default `deafen implies mute`: **off** (fully independent controls, your stated preference).
 - Default movie preset: 1080p / 8 Mbps H.264 High, GOP 2 s; AV1/VP9 later if all viewers are on Chrome/Firefox.
 - Projector control channel: LiveKit data channel with `role=host` check (works for a remote co-host too), plus the local mpv IPC socket for your own tooling.
+
+## Status (2026-09-12, end of first session)
+
+Implemented and verified locally end to end (projector → livekit-server --dev → browser):
+- `deploy/`: compose, Caddy, LiveKit/ingress templates, Oracle setup script, dev config. **Not yet provisioned** (no VM, no domain).
+- `server/`: full HTTP API, SQLite, LiveKit JWTs, chat history/broadcast, embedded SPA; tests pass.
+- `web/`: theater UI, join flow, host transport bar, chat/people/queue sidebar, audio model (mic / deafen / movie independent), settings, PWA; 39 unit tests + headless-browser smoke test.
+- `projector/`: libmpv SW render, paced FIFO audio clock (fill flat over 2 min), ffmpeg h264_videotoolbox, in-process Opus, own RTP packetization with absolute timestamps, data-channel control with host-role check, media-root allowlist. Measured: 24.00 fps, 0 timestamp regressions across pause/seek/quality change, A/V delta ≈ 23 ms, IDR every 2.00 s including during pause.
+
+Next: provision the Oracle VM and domain (Phase 0 script is ready); test with a real MKV (ASS subs, DTS/AC3 audio) and a yt-dlp URL; Linux host run (VA-API/NVENC/libx264 fallback); simulcast second layer; 60-minute drift soak with the sync clip; Windows named-pipe audio path; GL render path if 4K sources are too slow for the SW renderer.
