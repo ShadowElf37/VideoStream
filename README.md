@@ -10,6 +10,7 @@ See [docs/PLAN.md](docs/PLAN.md) for the architecture, evaluation and build phas
 
 ```
 deploy/     docker compose for the server (Caddy, LiveKit, app server)
+            plus media/, the pushed library
 server/     Go app server: rooms, tokens, chat history, serves the web build
 web/        React + TypeScript watch-party client
 projector/  Go + libmpv host-side streamer

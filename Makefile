@@ -21,7 +21,7 @@ server:
 vspush:
 	go build -tags "$(PROJECTOR_TAGS)" -o projector/bin/vspush ./projector/cmd/vspush
 
-## push: transcode a file and upload it to the server's media library.
+## push: prepare a file and upload it to the server's media library.
 ##   make push FILE=~/Videos/ep01.mkv AID=2 SID=1
 ## AID/SID are mpv track numbers (1-based, per type); SID=0 burns no subtitles.
 ## HOST comes from deploy/.env if you have one, else pass HOST=user@ip.

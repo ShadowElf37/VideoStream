@@ -140,73 +140,63 @@ sudo docker compose logs livekit | grep -i turn
 If Caddy loops on ACME failures, DNS has not propagated or the VCN rule for TCP
 80 is missing.
 
-### The house projector
+### Media, and how a film reaches the room
 
-A projector running on this machine, streaming files pushed ahead of time, so
-a party does not depend on anyone's home uplink and nobody has to start a
-binary by hand.
+The normal way to watch something is to **push it to the server ahead of
+time**. The server then serves the file over HTTPS and tells every browser
+where the room is in it; each browser buffers as deeply as it likes and keeps
+its own playhead locked to that.
 
-**It cannot encode, and does not try to.** Measured on the A1: software x264
-at 1080p runs 0.35x real time at `veryfast` and 0.97x at `superfast`, with no
-GPU to fall back on. So encoding happens once, on the machine that has the
-files, and the server only paces bytes onto the wire.
-
-Turn it on:
-
-```bash
-# once, in deploy/.env
-HOUSE_SECRET=$(tr -dc 'A-Za-z0-9_-' </dev/urandom | head -c 32)
-
-sudo docker compose --profile house up -d
-```
-
-Leaving `HOUSE_SECRET` unset disables the feature and the web UI stops
-offering it.
-
-#### Pushing media
-
-From the machine with the files (needs `mpv` and `ffmpeg`):
+**The server cannot encode**, which is why the push exists. Measured on the A1:
+software x264 at 1080p runs 0.35x real time at `veryfast` and 0.97x at
+`superfast`, with no GPU to fall back on. So encoding happens once, on the
+machine holding the files.
 
 ```bash
 make push FILE=~/Videos/ep01.mkv AID=2 SID=1 HOST=ubuntu@203.0.113.10
 ```
 
-`AID`/`SID` are mpv track numbers — 1-based, counted per type, so `AID=2` is
-the second audio track. `SID=0` burns in no subtitles. Check what a file has
-with `mpv --list-tracks file.mkv`.
+`AID`/`SID` are mpv-style track numbers — 1-based, counted per type, so
+`AID=2` is the second audio track and `SID=0` burns in no subtitles. Check a
+file with `mpv --list-tracks file.mkv`.
 
-What that does, and why it is shaped this way:
+That produces a title directory in `deploy/media/`:
 
-1. **mpv** renders the subtitles and encodes H.264 + Opus, at roughly 8x real
-   time with a hardware encoder. mpv rather than ffmpeg because it is the only
-   one of the two that renders ASS with the fonts attached to the file — and
-   because it is how the desktop projector draws subtitles, so what viewers
-   see does not change between the two modes.
-2. **ffmpeg** stream-copies the result into Annex-B access units and Opus
-   packets. No decode, no re-encode.
-3. Those are interleaved into a `.vsm` with a keyframe index, and copied to
-   `deploy/media/`.
+```
+<id>/movie.mp4    H.264 High + AAC-LC, moov first, IDR every ~2s
+<id>/meta.json    duration, geometry, codecs, chapters, provenance
+```
+
+One ffmpeg pass does it, at roughly 8x real time with a hardware encoder. It
+needs an ffmpeg built with **libass** — on macOS that is `ffmpeg-full`, not the
+slim `ffmpeg`; vspush finds one and says so plainly if there is none.
 
 Subtitles are burned in and one audio track survives, because nothing
-downstream can render or switch them any more. Pushing a dual-audio show
-twice, once per language, is the way to offer both.
+downstream can render or switch them any more. A dual-audio show has to be
+pushed twice to offer both languages.
 
-Defaults worth knowing: video 5000 kbps, audio **192 kbps** Opus (the source
-is already lossy, and a second generation at 128k is audibly worse on music),
-and a keyframe every 2 s — which is also the seek granularity and how long a
-late joiner waits for a picture. All overridable: `vspush --help`.
+Defaults: video 5000 kbps, audio 192 kbps AAC (the source is already lossy, and
+a second generation at 128k is audibly worse on music), keyframes every 2 s —
+which is also the seek granularity. All overridable; see `vspush --help`.
 
 #### Housekeeping
 
-A 1080p episode is 250–300 MB, so the 45 GB boot volume holds roughly 150 of
-them. The host can delete files from the Queue tab; the file currently
-playing is refused rather than removed from under the reader.
+A 1080p episode is 250–300 MB, so a 45 GB boot volume holds roughly 150. The
+host can delete titles from the Queue tab.
 
 ```bash
-ls -lh ~/videostream/deploy/media/     # what is up there
-df -h /                                # how much room is left
-sudo docker compose logs -f house      # what it is doing
+ls -lh ~/videostream/deploy/media/
+df -h /
+sudo docker compose logs -f app
 ```
+
+#### The desktop projector
+
+Still supported, as the fallback. It is the only way to play a yt-dlp URL, to
+switch subtitle or audio tracks live, or to watch something without pushing it
+first. It streams live over WebRTC, so a viewer's picture necessarily trails
+the host by their receive buffer and the central clock does not apply — pause
+and seek are as immediate as the transport allows, which is not very.
 
 ### The instance firewall
 

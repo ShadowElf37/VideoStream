@@ -31,11 +31,6 @@ type Config struct {
 	// MediaRoot is the directory of pushed titles (see internal/media).
 	// Empty disables the library, and the UI stops offering it.
 	MediaRoot string
-
-	// HouseSecret authenticates the server-side projector when it polls for
-	// its room assignment. Empty disables the house projector entirely, which
-	// is the right default: a deployment without one should not advertise it.
-	HouseSecret string
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -49,7 +44,6 @@ func Load() (*Config, error) {
 		LiveKitAPIKey:    os.Getenv("LIVEKIT_API_KEY"),
 		LiveKitAPISecret: os.Getenv("LIVEKIT_API_SECRET"),
 		DBPath:           getEnv("DB_PATH", "./data/videostream.db"),
-		HouseSecret:      os.Getenv("HOUSE_SECRET"),
 		MediaRoot:        os.Getenv("MEDIA_ROOT"),
 	}
 

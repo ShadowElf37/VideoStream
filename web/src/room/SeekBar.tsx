@@ -12,12 +12,19 @@ export function SeekBar({
   duration,
   chapters,
   onSeek,
+  buffered,
   className,
 }: {
   position: number;
   duration: number;
   chapters: MpvChapter[];
   onSeek?: (seconds: number) => void;
+  /**
+   * Buffered ranges in seconds, YouTube-style. Only meaningful for
+   * server-hosted media, where the browser owns a real buffer; a live WebRTC
+   * track has no addressable buffer to draw.
+   */
+  buffered?: Array<[number, number]>;
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -78,6 +85,19 @@ export function SeekBar({
       }}
     >
       <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-1 rounded-full bg-white/20 group-hover:h-1.5 transition-[height] duration-150">
+        {/* Buffered ranges, under the playhead fill: what is already on this
+            machine and therefore instant to seek into. */}
+        {duration > 0 &&
+          buffered?.map(([start, end], i) => (
+            <div
+              key={i}
+              className="absolute inset-y-0 rounded-full bg-white/25"
+              style={{
+                left: `${clamp(start / duration, 0, 1) * 100}%`,
+                width: `${clamp((end - start) / duration, 0, 1) * 100}%`,
+              }}
+            />
+          ))}
         <div className="absolute inset-y-0 left-0 rounded-full bg-accent" style={{ width: `${pct}%` }} />
         {hover !== null && duration > 0 && (
           <div className="absolute inset-y-0 left-0 rounded-full bg-white/25" style={{ width: `${(hover / duration) * 100}%` }} />
