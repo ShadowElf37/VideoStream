@@ -14,8 +14,8 @@ server/internal/web/dist
 server/bin
 projector/bin
 
-# Not needed to build the server image.
-projector
+# The house projector image builds from projector/, so the tree stays in the
+# context; only its build output is excluded (above).
 deploy/data
 deploy/.env
 deploy/livekit.yaml
