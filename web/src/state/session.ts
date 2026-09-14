@@ -1,11 +1,12 @@
 import { create } from 'zustand';
-import type { PresenceMessage, Role, RoomInfo, RoomSettings, TokenResponse } from '@/proto/messages';
+import type { Access, Links, PresenceMessage, Role, RoomSettings, TokenResponse } from '@/proto/messages';
 
 export type ConnPhase = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'failed';
 
+/** What we present at the door. After a successful join only the key is
+ *  kept (our own link), so a reconnect never re-sends the password. */
 export interface Credentials {
-  inviteKey?: string;
-  hostSecret?: string;
+  key?: string;
   password?: string;
 }
 
@@ -32,14 +33,18 @@ export interface PauseRequest {
 }
 
 interface SessionStore {
-  roomId: string;
-  room: RoomInfo | null;
+  /** What the door said our key is worth, before we joined. */
+  access: Access | null;
   /** Display name the local user joined with. */
   name: string;
   token: TokenResponse | null;
   role: Role | null;
   settings: RoomSettings | null;
+  /** The current links; the host one is only present for hosts. */
+  links: Links | null;
   credentials: Credentials;
+  /** Set when a reconnect was refused because our key was rotated away. */
+  linkExpired: boolean;
   phase: ConnPhase;
   error: string | null;
   presence: Record<string, PresenceMessage>;
@@ -48,12 +53,15 @@ interface SessionStore {
   pauseRequest: PauseRequest | null;
   isFullscreen: boolean;
   audioBlocked: boolean;
+  inviteOpen: boolean;
 
-  setRoom: (roomId: string, room: RoomInfo | null) => void;
+  setAccess: (a: Access | null) => void;
   setName: (name: string) => void;
   setToken: (token: TokenResponse | null) => void;
   setSettings: (s: RoomSettings) => void;
+  setLinks: (l: Links | null) => void;
   setCredentials: (c: Credentials) => void;
+  setLinkExpired: (v: boolean) => void;
   setPhase: (p: ConnPhase, error?: string | null) => void;
   setPresence: (identity: string, p: PresenceMessage) => void;
   removePresence: (identity: string) => void;
@@ -65,19 +73,21 @@ interface SessionStore {
   clearPauseRequest: (id: number) => void;
   setFullscreen: (v: boolean) => void;
   setAudioBlocked: (v: boolean) => void;
+  setInviteOpen: (v: boolean) => void;
   reset: () => void;
 }
 
 let seq = 1;
 
 export const useSession = create<SessionStore>()((set) => ({
-  roomId: '',
-  room: null,
+  access: null,
   name: '',
   token: null,
   role: null,
   settings: null,
+  links: null,
   credentials: {},
+  linkExpired: false,
   phase: 'idle',
   error: null,
   presence: {},
@@ -86,12 +96,15 @@ export const useSession = create<SessionStore>()((set) => ({
   pauseRequest: null,
   isFullscreen: false,
   audioBlocked: false,
+  inviteOpen: false,
 
-  setRoom: (roomId, room) => set({ roomId, room, settings: room?.settings ?? null }),
+  setAccess: (access) => set({ access }),
   setName: (name) => set({ name }),
-  setToken: (token) => set({ token, role: token?.role ?? null, settings: token?.settings ?? null }),
+  setToken: (token) => set({ token, role: token?.role ?? null, settings: token?.settings ?? null, links: token?.links ?? null }),
   setSettings: (settings) => set({ settings }),
+  setLinks: (links) => set({ links }),
   setCredentials: (credentials) => set({ credentials }),
+  setLinkExpired: (linkExpired) => set({ linkExpired }),
   setPhase: (phase, error = null) => set({ phase, error }),
   setPresence: (identity, p) => set((s) => ({ presence: { ...s.presence, [identity]: p } })),
   removePresence: (identity) =>
@@ -112,10 +125,12 @@ export const useSession = create<SessionStore>()((set) => ({
   clearPauseRequest: (id) => set((s) => (s.pauseRequest?.id === id ? { pauseRequest: null } : {})),
   setFullscreen: (isFullscreen) => set({ isFullscreen }),
   setAudioBlocked: (audioBlocked) => set({ audioBlocked }),
+  setInviteOpen: (inviteOpen) => set({ inviteOpen }),
   reset: () =>
     set({
       token: null,
       role: null,
+      links: null,
       phase: 'idle',
       error: null,
       presence: {},
@@ -123,5 +138,6 @@ export const useSession = create<SessionStore>()((set) => ({
       reactions: [],
       pauseRequest: null,
       audioBlocked: false,
+      inviteOpen: false,
     }),
 }));

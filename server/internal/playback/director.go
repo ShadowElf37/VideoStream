@@ -1,4 +1,4 @@
-// Package playback owns where each room is in its film.
+// Package playback owns where the room is in its film.
 //
 // This is the change the whole file-on-server mode turns on: playback time
 // stops being implicit in whichever frames have arrived at each browser and
@@ -28,10 +28,10 @@ import (
 // ErrNoMedia is returned for transport commands when nothing is loaded.
 var ErrNoMedia = errors.New("nothing is loaded")
 
-// Broadcaster publishes a payload to everyone in a room. The chat service's
-// LiveKit broadcaster satisfies this.
+// Broadcaster publishes a payload to everyone in the room. The chat
+// service's LiveKit broadcaster satisfies this.
 type Broadcaster interface {
-	Broadcast(ctx context.Context, roomID, topic string, payload []byte) error
+	Broadcast(ctx context.Context, topic string, payload []byte) error
 }
 
 // Resolver turns a media id into what a client needs to play it: how long it
@@ -59,7 +59,7 @@ func (c clock) nowMS() int64 {
 	return c.wallEpoch.Add(time.Since(c.monoStart)).UnixMilli()
 }
 
-// room is one room's playback state.
+// room is the room's playback state.
 type room struct {
 	mediaID    string
 	title      string
@@ -80,30 +80,30 @@ type room struct {
 	queue []string
 }
 
-// Director holds every room's playback state.
+// Director holds the room's playback state.
 type Director struct {
-	mu    sync.Mutex
-	rooms map[string]*room
+	mu   sync.Mutex
+	room *room
 
 	clock    clock
 	bcast    Broadcaster
 	resolver Resolver
-	// seq is a global broadcast counter, so a client can drop a packet that
+	// seq is a broadcast counter, so a client can drop a packet that
 	// overtook a newer one.
 	seq int64
 }
 
 // New creates a director.
 func New(b Broadcaster, r Resolver) *Director {
-	return &Director{rooms: map[string]*room{}, clock: newClock(), bcast: b, resolver: r}
+	return &Director{room: &room{rate: 1}, clock: newClock(), bcast: b, resolver: r}
 }
 
 // NowMS exposes the director's clock, which is the clock clients synchronise
 // against.
 func (d *Director) NowMS() int64 { return d.clock.nowMS() }
 
-// posMS is where the room is now. Playing rooms advance with the clock;
-// paused rooms sit where they were left.
+// posMS is where the room is now. Playing, it advances with the clock;
+// paused, it sits where it was left.
 func (d *Director) posMS(r *room) int64 {
 	if r.mediaID == "" {
 		return 0
@@ -141,24 +141,15 @@ func (d *Director) reanchor(r *room, posMS int64) {
 	r.gen++
 }
 
-func (d *Director) get(roomID string) *room {
-	r, ok := d.rooms[roomID]
-	if !ok {
-		r = &room{rate: 1}
-		d.rooms[roomID] = r
-	}
-	return r
-}
-
-// Snapshot is the wire state for one room.
-func (d *Director) Snapshot(roomID string) proto.PlaybackState {
+// Snapshot is the wire state.
+func (d *Director) Snapshot() proto.PlaybackState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.snapshotLocked(roomID)
+	return d.snapshotLocked()
 }
 
-func (d *Director) snapshotLocked(roomID string) proto.PlaybackState {
-	r := d.get(roomID)
+func (d *Director) snapshotLocked() proto.PlaybackState {
+	r := d.room
 	st := proto.PlaybackState{
 		Seq:         d.nextSeq(),
 		MediaID:     r.mediaID,
@@ -189,36 +180,36 @@ func (d *Director) nextSeq() int64 {
 }
 
 // Load starts a title, discarding the queue.
-func (d *Director) Load(ctx context.Context, roomID, mediaID string) error {
-	return d.load(ctx, roomID, mediaID, true)
+func (d *Director) Load(ctx context.Context, mediaID string) error {
+	return d.load(ctx, mediaID, true)
 }
 
 // Enqueue adds a title behind whatever is playing, or starts it if nothing is.
-func (d *Director) Enqueue(ctx context.Context, roomID, mediaID string) error {
+func (d *Director) Enqueue(ctx context.Context, mediaID string) error {
 	if _, _, _, err := d.resolver.Resolve(mediaID); err != nil {
 		return err
 	}
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	idle := r.mediaID == ""
 	if !idle {
 		r.queue = append(r.queue, mediaID)
 	}
 	d.mu.Unlock()
 	if idle {
-		return d.load(ctx, roomID, mediaID, false)
+		return d.load(ctx, mediaID, false)
 	}
-	d.Publish(ctx, roomID)
+	d.Publish(ctx)
 	return nil
 }
 
-func (d *Director) load(ctx context.Context, roomID, mediaID string, clearQueue bool) error {
+func (d *Director) load(ctx context.Context, mediaID string, clearQueue bool) error {
 	duration, title, url, err := d.resolver.Resolve(mediaID)
 	if err != nil {
 		return err
 	}
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	r.mediaID, r.title, r.url, r.durationMS = mediaID, title, url, duration
 	r.rate = 1
 	// Playing, not paused: picking something is a request to watch it. Clients
@@ -230,14 +221,14 @@ func (d *Director) load(ctx context.Context, roomID, mediaID string, clearQueue 
 	}
 	d.reanchor(r, 0)
 	d.mu.Unlock()
-	d.Publish(ctx, roomID)
+	d.Publish(ctx)
 	return nil
 }
 
 // SetPaused pauses or resumes, pinning the position at the moment it changed.
-func (d *Director) SetPaused(ctx context.Context, roomID string, paused bool) error {
+func (d *Director) SetPaused(ctx context.Context, paused bool) error {
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	if r.mediaID == "" {
 		d.mu.Unlock()
 		return ErrNoMedia
@@ -255,14 +246,14 @@ func (d *Director) SetPaused(ctx context.Context, roomID string, paused bool) er
 		d.reanchor(r, pos)
 	}
 	d.mu.Unlock()
-	d.Publish(ctx, roomID)
+	d.Publish(ctx)
 	return nil
 }
 
 // TogglePause flips the pause state and reports the new value.
-func (d *Director) TogglePause(ctx context.Context, roomID string) (bool, error) {
+func (d *Director) TogglePause(ctx context.Context) (bool, error) {
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	if r.mediaID == "" {
 		d.mu.Unlock()
 		return false, ErrNoMedia
@@ -275,14 +266,14 @@ func (d *Director) TogglePause(ctx context.Context, roomID string) (bool, error)
 	}
 	d.reanchor(r, pos)
 	d.mu.Unlock()
-	d.Publish(ctx, roomID)
+	d.Publish(ctx)
 	return paused, nil
 }
 
 // Seek moves to an absolute position, or by a delta when relative.
-func (d *Director) Seek(ctx context.Context, roomID string, ms int64, relative bool) (int64, error) {
+func (d *Director) Seek(ctx context.Context, ms int64, relative bool) (int64, error) {
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	if r.mediaID == "" {
 		d.mu.Unlock()
 		return 0, ErrNoMedia
@@ -294,14 +285,14 @@ func (d *Director) Seek(ctx context.Context, roomID string, ms int64, relative b
 	d.reanchor(r, target)
 	landed := r.anchorPosMS
 	d.mu.Unlock()
-	d.Publish(ctx, roomID)
+	d.Publish(ctx)
 	return landed, nil
 }
 
 // Stop unloads, leaving the room idle.
-func (d *Director) Stop(ctx context.Context, roomID string) {
+func (d *Director) Stop(ctx context.Context) {
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	r.mediaID, r.title, r.url = "", "", ""
 	r.durationMS, r.anchorPosMS = 0, 0
 	r.queue = nil
@@ -309,30 +300,23 @@ func (d *Director) Stop(ctx context.Context, roomID string) {
 	r.gen++
 	r.anchorAtMS = d.clock.nowMS()
 	d.mu.Unlock()
-	d.Publish(ctx, roomID)
-}
-
-// Forget drops a room's state, for when a room is gone.
-func (d *Director) Forget(roomID string) {
-	d.mu.Lock()
-	delete(d.rooms, roomID)
-	d.mu.Unlock()
+	d.Publish(ctx)
 }
 
 // Publish broadcasts the current state to the room.
-func (d *Director) Publish(ctx context.Context, roomID string) {
+func (d *Director) Publish(ctx context.Context) {
 	if d.bcast == nil {
 		return
 	}
-	st := d.Snapshot(roomID)
+	st := d.Snapshot()
 	payload, err := encode(st)
 	if err != nil {
 		return
 	}
-	_ = d.bcast.Broadcast(ctx, roomID, proto.TopicPlayback, payload)
+	_ = d.bcast.Broadcast(ctx, proto.TopicPlayback, payload)
 }
 
-// Run advances playlists and keeps late joiners fresh.
+// Run advances the playlist and keeps late joiners fresh.
 //
 // Two jobs on one ticker: notice when a film has reached its end and move on,
 // and re-broadcast periodically so a client that missed a packet, joined late
@@ -345,64 +329,53 @@ func (d *Director) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, roomID := range d.endedRooms() {
-				d.advance(ctx, roomID)
+			if d.ended() {
+				d.advance(ctx)
 			}
-			for _, roomID := range d.activeRooms() {
-				d.Publish(ctx, roomID)
+			if d.active() {
+				d.Publish(ctx)
 			}
 		}
 	}
 }
 
-// endedRooms lists rooms whose current title has run out.
-func (d *Director) endedRooms() []string {
+// ended reports whether the current title has run out.
+func (d *Director) ended() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var out []string
-	for id, r := range d.rooms {
-		if r.mediaID != "" && !r.paused && r.durationMS > 0 && d.posMS(r) >= r.durationMS {
-			out = append(out, id)
-		}
-	}
-	return out
+	r := d.room
+	return r.mediaID != "" && !r.paused && r.durationMS > 0 && d.posMS(r) >= r.durationMS
 }
 
-func (d *Director) activeRooms() []string {
+// active reports whether anything is loaded.
+func (d *Director) active() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	out := make([]string, 0, len(d.rooms))
-	for id, r := range d.rooms {
-		if r.mediaID != "" {
-			out = append(out, id)
-		}
-	}
-	return out
+	return d.room.mediaID != ""
 }
 
 // advance moves to the next queued title, or holds at the end.
-func (d *Director) advance(ctx context.Context, roomID string) {
+func (d *Director) advance(ctx context.Context) {
 	d.mu.Lock()
-	r := d.get(roomID)
+	r := d.room
 	if len(r.queue) == 0 {
 		// Hold on the last frame rather than unloading: the room is still
 		// watching something, it has simply finished.
 		r.paused = true
 		d.reanchor(r, r.durationMS)
 		d.mu.Unlock()
-		d.Publish(ctx, roomID)
+		d.Publish(ctx)
 		return
 	}
 	next := r.queue[0]
 	r.queue = r.queue[1:]
 	d.mu.Unlock()
-	if err := d.load(ctx, roomID, next, false); err != nil {
+	if err := d.load(ctx, next, false); err != nil {
 		// A queued title that has since been deleted should not wedge the
 		// room; drop it and try the next one on the following tick.
 		d.mu.Lock()
-		r := d.get(roomID)
-		r.paused = true
+		d.room.paused = true
 		d.mu.Unlock()
-		d.Publish(ctx, roomID)
+		d.Publish(ctx)
 	}
 }

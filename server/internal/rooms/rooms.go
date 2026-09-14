@@ -1,9 +1,11 @@
-// Package rooms implements room creation and lookup on top of the store,
-// including building the public links returned to clients.
+// Package rooms is the room: its viewer key, its settings, and what a
+// visitor's credentials are worth. The name is plural for history; there is
+// exactly one.
 package rooms
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"strings"
 
@@ -12,10 +14,7 @@ import (
 	"github.com/ShadowElf37/VideoStream/server/internal/store"
 )
 
-// defaultRoomName is used when a room is created without a name.
-const defaultRoomName = "Untitled Room"
-
-// Service wraps the store with room-level business logic.
+// Service wraps the store with room-level logic.
 type Service struct {
 	store *store.Store
 	cfg   *config.Config
@@ -26,48 +25,83 @@ func NewService(st *store.Store, cfg *config.Config) *Service {
 	return &Service{store: st, cfg: cfg}
 }
 
-// Create makes a new room with default settings.
-func (s *Service) Create(ctx context.Context, name string, passwordHash *string) (*store.Room, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = defaultRoomName
-	}
-	room, err := s.store.CreateRoom(ctx, name, passwordHash, store.DefaultSettings())
+// Get returns the room, creating it on first use.
+func (s *Service) Get(ctx context.Context) (*store.Room, error) {
+	return s.store.Room(ctx)
+}
+
+// Rotate replaces the viewer key. Every link handed out so far stops
+// working; devices that have been in before are remembered by their cookie
+// and unaffected.
+func (s *Service) Rotate(ctx context.Context) (*store.Room, error) {
+	room, err := s.store.RotateViewerKey(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("create room: %w", err)
+		return nil, fmt.Errorf("rotate viewer key: %w", err)
 	}
 	return room, nil
 }
 
-// Get fetches a room by ID. Returns store.ErrNotFound if missing.
-func (s *Service) Get(ctx context.Context, id string) (*store.Room, error) {
-	return s.store.GetRoom(ctx, id)
+// UpdateSettings persists new settings.
+func (s *Service) UpdateSettings(ctx context.Context, settings proto.RoomSettings) error {
+	return s.store.UpdateSettings(ctx, settings)
 }
 
-// UpdateSettings persists new settings for a room.
-func (s *Service) UpdateSettings(ctx context.Context, id string, settings proto.RoomSettings) error {
-	return s.store.UpdateSettings(ctx, id, settings)
-}
-
-// CreateResponse builds the CreateRoomResponse with links pointing at the
-// configured public URL.
-func (s *Service) CreateResponse(room *store.Room) proto.CreateRoomResponse {
+// Links builds the viewer link from the configured public URL: the site
+// root with the key in the query, because the site root is the door.
+func (s *Service) Links(room *store.Room) proto.Links {
 	base := strings.TrimSuffix(s.cfg.PublicURL, "/")
-	return proto.CreateRoomResponse{
-		ID:            room.ID,
-		Name:          room.Name,
-		InviteLink:    fmt.Sprintf("%s/r/%s?k=%s", base, room.ID, room.InviteKey),
-		HostLink:      fmt.Sprintf("%s/r/%s?h=%s", base, room.ID, room.HostSecret),
-		ProjectorLink: fmt.Sprintf("%s/r/%s?p=%s", base, room.ID, room.ProjectorKey),
+	return proto.Links{Viewer: fmt.Sprintf("%s/?k=%s", base, room.ViewerKey)}
+}
+
+// KeyAccess is what a key from a link is worth: viewer if it is the current
+// viewer key, none otherwise. Compared in constant time.
+func (s *Service) KeyAccess(room *store.Room, key string) string {
+	if key != "" && subtle.ConstantTimeCompare([]byte(key), []byte(room.ViewerKey)) == 1 {
+		return proto.AccessViewer
+	}
+	return proto.AccessNone
+}
+
+// PasswordAccess is what the room password is worth: host if it matches,
+// none otherwise. Compared in constant time.
+func (s *Service) PasswordAccess(password string) string {
+	if password != "" && subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.RoomPassword)) == 1 {
+		return proto.AccessHost
+	}
+	return proto.AccessNone
+}
+
+// rank orders access levels so the best of several can be picked.
+func rank(access string) int {
+	switch access {
+	case proto.AccessHost:
+		return 2
+	case proto.AccessViewer:
+		return 1
+	default:
+		return 0
 	}
 }
 
-// Info builds the public RoomInfo view of a room.
-func Info(room *store.Room) proto.RoomInfo {
-	return proto.RoomInfo{
-		ID:          room.ID,
-		Name:        room.Name,
-		HasPassword: room.PasswordHash != nil,
-		Settings:    room.Settings,
+// Best returns the highest access level among those given.
+func Best(levels ...string) string {
+	best := proto.AccessNone
+	for _, l := range levels {
+		if rank(l) > rank(best) {
+			best = l
+		}
+	}
+	return best
+}
+
+// RoleFor maps an access level to the role it grants; none maps to "".
+func RoleFor(access string) string {
+	switch access {
+	case proto.AccessHost:
+		return proto.RoleHost
+	case proto.AccessViewer:
+		return proto.RoleViewer
+	default:
+		return ""
 	}
 }

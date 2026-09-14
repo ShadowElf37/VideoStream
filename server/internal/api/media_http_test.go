@@ -134,10 +134,7 @@ func TestListMediaSignsURLs(t *testing.T) {
 	handler, _, srv := newTestServer(t)
 	writeLibrary(t, srv)
 
-	createRec := doJSON(t, handler, http.MethodPost, "/api/rooms", proto.CreateRoomRequest{Name: "Party"}, "")
-	var created proto.CreateRoomResponse
-	decodeBody(t, createRec, &created)
-	viewer := tokenFor(t, handler, created, proto.RoleViewer)
+	viewer := joinAs(t, handler, proto.RoleViewer)
 
 	rec := doJSON(t, handler, http.MethodGet, "/api/media", nil, viewer.Session)
 	if rec.Code != http.StatusOK {
@@ -175,11 +172,8 @@ func TestDeleteMediaIsHostOnly(t *testing.T) {
 	handler, _, srv := newTestServer(t)
 	root, _ := writeLibrary(t, srv)
 
-	createRec := doJSON(t, handler, http.MethodPost, "/api/rooms", proto.CreateRoomRequest{Name: "Party"}, "")
-	var created proto.CreateRoomResponse
-	decodeBody(t, createRec, &created)
-	host := tokenFor(t, handler, created, proto.RoleHost)
-	viewer := tokenFor(t, handler, created, proto.RoleViewer)
+	host := joinAs(t, handler, proto.RoleHost)
+	viewer := joinAs(t, handler, proto.RoleViewer)
 
 	if rec := doJSON(t, handler, http.MethodDelete, "/api/media/test_title", nil, viewer.Session); rec.Code != http.StatusForbidden {
 		t.Fatalf("viewer delete: status %d, want 403", rec.Code)
@@ -205,10 +199,7 @@ func TestMediaDisabledWithoutRoot(t *testing.T) {
 	srv.library = nil
 	srv.cfg.MediaRoot = ""
 
-	createRec := doJSON(t, handler, http.MethodPost, "/api/rooms", proto.CreateRoomRequest{Name: "Party"}, "")
-	var created proto.CreateRoomResponse
-	decodeBody(t, createRec, &created)
-	viewer := tokenFor(t, handler, created, proto.RoleViewer)
+	viewer := joinAs(t, handler, proto.RoleViewer)
 
 	if rec := doJSON(t, handler, http.MethodGet, "/api/media", nil, viewer.Session); rec.Code != http.StatusNotFound {
 		t.Errorf("list: status %d, want 404", rec.Code)

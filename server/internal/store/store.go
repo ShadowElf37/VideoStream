@@ -1,5 +1,5 @@
-// Package store implements SQLite-backed persistence for rooms and chat
-// messages using the pure-Go modernc.org/sqlite driver.
+// Package store implements SQLite-backed persistence for the room and its
+// chat history using the pure-Go modernc.org/sqlite driver.
 package store
 
 import (
@@ -20,16 +20,15 @@ import (
 // ErrNotFound is returned when a lookup finds no matching row.
 var ErrNotFound = errors.New("not found")
 
-// Room is a persisted room row.
+// Room is the one room's persisted state. There is exactly one row; it is
+// created on first use and never deleted, only rotated.
 type Room struct {
-	ID           string
-	Name         string
-	PasswordHash *string // nil means no password
-	InviteKey    string
-	HostSecret   string
-	ProjectorKey string
-	Settings     proto.RoomSettings
-	CreatedAt    time.Time
+	// ViewerKey is the secret in the link friends get. Rotating it is how a
+	// leaked link stops working.
+	ViewerKey string
+	Settings  proto.RoomSettings
+	RotatedAt time.Time
+	CreatedAt time.Time
 }
 
 // Store wraps a SQLite database handle.
@@ -63,19 +62,19 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) migrate() error {
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS rooms (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			password_hash TEXT,
-			invite_key TEXT NOT NULL,
-			host_secret TEXT NOT NULL,
-			projector_key TEXT NOT NULL,
+		// The many-rooms layout that preceded the single room. It only ever
+		// held test parties; the chat in it is not worth carrying across.
+		`DROP TABLE IF EXISTS rooms`,
+		`DROP TABLE IF EXISTS messages`,
+		`CREATE TABLE IF NOT EXISTS room (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			viewer_key TEXT NOT NULL,
 			settings_json TEXT NOT NULL,
+			rotated_at INTEGER NOT NULL,
 			created_at INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS messages (
+		`CREATE TABLE IF NOT EXISTS chat (
 			id TEXT PRIMARY KEY,
-			room_id TEXT NOT NULL,
 			identity TEXT NOT NULL,
 			name TEXT NOT NULL,
 			color TEXT NOT NULL,
@@ -83,7 +82,7 @@ func (s *Store) migrate() error {
 			ts INTEGER NOT NULL,
 			kind TEXT NOT NULL
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_messages_room_ts ON messages(room_id, ts)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_ts ON chat(ts)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -98,7 +97,7 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// DefaultSettings returns the settings applied to newly created rooms.
+// DefaultSettings returns the settings the room starts with.
 func DefaultSettings() proto.RoomSettings {
 	return proto.RoomSettings{
 		AnyoneCanPause:    true,
@@ -107,84 +106,80 @@ func DefaultSettings() proto.RoomSettings {
 	}
 }
 
-// CreateRoom generates a new room ID and secrets, persists the row, and
-// returns the created Room.
-func (s *Store) CreateRoom(ctx context.Context, name string, passwordHash *string, settings proto.RoomSettings) (*Room, error) {
-	settingsJSON, err := json.Marshal(settings)
+// Room returns the room, creating it with a fresh key and default settings
+// the first time it is asked for.
+func (s *Store) Room(ctx context.Context) (*Room, error) {
+	room, err := s.getRoom(ctx)
+	if err == nil {
+		return room, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	settingsJSON, err := json.Marshal(DefaultSettings())
 	if err != nil {
 		return nil, fmt.Errorf("marshal settings: %w", err)
 	}
-
-	room := &Room{
-		ID:           NewID(8),
-		Name:         name,
-		PasswordHash: passwordHash,
-		InviteKey:    NewID(24),
-		HostSecret:   NewID(24),
-		ProjectorKey: NewID(24),
-		Settings:     settings,
-		CreatedAt:    time.Now().UTC(),
-	}
-
+	now := time.Now().UTC().Unix()
+	// INSERT OR IGNORE: with a single connection there is no race, but it
+	// keeps a second Open on the same file harmless.
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO rooms (id, name, password_hash, invite_key, host_secret, projector_key, settings_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		room.ID, room.Name, room.PasswordHash, room.InviteKey, room.HostSecret, room.ProjectorKey,
-		string(settingsJSON), room.CreatedAt.Unix(),
-	)
+		`INSERT OR IGNORE INTO room (id, viewer_key, settings_json, rotated_at, created_at) VALUES (1, ?, ?, ?, ?)`,
+		NewID(24), string(settingsJSON), now, now)
 	if err != nil {
-		return nil, fmt.Errorf("insert room: %w", err)
+		return nil, fmt.Errorf("create room: %w", err)
 	}
-	return room, nil
+	return s.getRoom(ctx)
 }
 
-// GetRoom fetches a room by ID.
-func (s *Store) GetRoom(ctx context.Context, id string) (*Room, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, password_hash, invite_key, host_secret, projector_key, settings_json, created_at
-		 FROM rooms WHERE id = ?`, id)
-
+func (s *Store) getRoom(ctx context.Context) (*Room, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT viewer_key, settings_json, rotated_at, created_at FROM room WHERE id = 1`)
 	var (
 		room         Room
-		passwordHash sql.NullString
 		settingsJSON string
+		rotatedAt    int64
 		createdAt    int64
 	)
-	err := row.Scan(&room.ID, &room.Name, &passwordHash, &room.InviteKey, &room.HostSecret,
-		&room.ProjectorKey, &settingsJSON, &createdAt)
+	err := row.Scan(&room.ViewerKey, &settingsJSON, &rotatedAt, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get room: %w", err)
 	}
-	if passwordHash.Valid {
-		v := passwordHash.String
-		room.PasswordHash = &v
-	}
 	if err := json.Unmarshal([]byte(settingsJSON), &room.Settings); err != nil {
 		return nil, fmt.Errorf("unmarshal settings: %w", err)
 	}
+	room.RotatedAt = time.Unix(rotatedAt, 0).UTC()
 	room.CreatedAt = time.Unix(createdAt, 0).UTC()
 	return &room, nil
 }
 
-// UpdateSettings persists new settings for a room.
-func (s *Store) UpdateSettings(ctx context.Context, id string, settings proto.RoomSettings) error {
+// RotateViewerKey replaces the viewer key and returns the room as it now is.
+func (s *Store) RotateViewerKey(ctx context.Context) (*Room, error) {
+	if _, err := s.Room(ctx); err != nil {
+		return nil, err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE room SET viewer_key = ?, rotated_at = ? WHERE id = 1`,
+		NewID(24), time.Now().UTC().Unix())
+	if err != nil {
+		return nil, fmt.Errorf("rotate key: %w", err)
+	}
+	return s.getRoom(ctx)
+}
+
+// UpdateSettings persists new settings.
+func (s *Store) UpdateSettings(ctx context.Context, settings proto.RoomSettings) error {
+	if _, err := s.Room(ctx); err != nil {
+		return err
+	}
 	settingsJSON, err := json.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("marshal settings: %w", err)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE rooms SET settings_json = ? WHERE id = ?`, string(settingsJSON), id)
-	if err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE room SET settings_json = ? WHERE id = 1`, string(settingsJSON)); err != nil {
 		return fmt.Errorf("update settings: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
 	}
 	return nil
 }
@@ -192,9 +187,8 @@ func (s *Store) UpdateSettings(ctx context.Context, id string, settings proto.Ro
 // InsertMessage stores a chat message.
 func (s *Store) InsertMessage(ctx context.Context, msg proto.ChatMessage) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, room_id, identity, name, color, text, ts, kind)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		msg.ID, msg.RoomID, msg.From.Identity, msg.From.Name, msg.From.Color, msg.Text, msg.TS, msg.Kind,
+		`INSERT INTO chat (id, identity, name, color, text, ts, kind) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		msg.ID, msg.From.Identity, msg.From.Name, msg.From.Color, msg.Text, msg.TS, msg.Kind,
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
@@ -202,24 +196,21 @@ func (s *Store) InsertMessage(ctx context.Context, msg proto.ChatMessage) error 
 	return nil
 }
 
-// ListMessages returns up to limit messages for a room older than before
-// (unix milliseconds; 0 means no lower bound on recency), newest-first
-// internally but returned oldest-first for display.
-func (s *Store) ListMessages(ctx context.Context, roomID string, before int64, limit int) ([]proto.ChatMessage, error) {
+// ListMessages returns up to limit messages older than before (unix
+// milliseconds; 0 means no bound), oldest-first.
+func (s *Store) ListMessages(ctx context.Context, before int64, limit int) ([]proto.ChatMessage, error) {
 	var (
 		rows *sql.Rows
 		err  error
 	)
 	if before > 0 {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, room_id, identity, name, color, text, ts, kind
-			 FROM messages WHERE room_id = ? AND ts < ? ORDER BY ts DESC LIMIT ?`,
-			roomID, before, limit)
+			`SELECT id, identity, name, color, text, ts, kind FROM chat WHERE ts < ? ORDER BY ts DESC LIMIT ?`,
+			before, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, room_id, identity, name, color, text, ts, kind
-			 FROM messages WHERE room_id = ? ORDER BY ts DESC LIMIT ?`,
-			roomID, limit)
+			`SELECT id, identity, name, color, text, ts, kind FROM chat ORDER BY ts DESC LIMIT ?`,
+			limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
@@ -229,7 +220,7 @@ func (s *Store) ListMessages(ctx context.Context, roomID string, before int64, l
 	msgs := []proto.ChatMessage{}
 	for rows.Next() {
 		var m proto.ChatMessage
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.From.Identity, &m.From.Name, &m.From.Color, &m.Text, &m.TS, &m.Kind); err != nil {
+		if err := rows.Scan(&m.ID, &m.From.Identity, &m.From.Name, &m.From.Color, &m.Text, &m.TS, &m.Kind); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		msgs = append(msgs, m)

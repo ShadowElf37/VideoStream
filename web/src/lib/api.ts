@@ -1,8 +1,7 @@
 import type {
   ChatHistoryResponse,
   ChatMessage,
-  CreateRoomRequest,
-  CreateRoomResponse,
+  Links,
   MediaMeta,
   PlaybackState,
   RoomInfo,
@@ -48,27 +47,34 @@ async function request<T>(path: string, init: RequestInit & { session?: string }
   return (await res.json()) as T;
 }
 
+// There is one room, so nothing here takes a room id. The door is
+// `getRoom` (what is this key worth?) and `getToken` (let me in); everything
+// after that carries the session the token endpoint handed back.
 export const api = {
-  createRoom: (body: CreateRoomRequest) =>
-    request<CreateRoomResponse>('/api/rooms', { method: 'POST', body: JSON.stringify(body) }),
+  getRoom: (key?: string) => request<RoomInfo>(key ? `/api/room?key=${encodeURIComponent(key)}` : '/api/room'),
 
-  getRoom: (id: string) => request<RoomInfo>(`/api/rooms/${encodeURIComponent(id)}`),
-
-  getToken: (id: string, body: TokenRequest) =>
-    request<TokenResponse>(`/api/rooms/${encodeURIComponent(id)}/token`, {
+  getToken: (body: TokenRequest) =>
+    request<TokenResponse>('/api/room/token', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  getChat: (id: string, session: string, opts: { before?: number; limit?: number } = {}) => {
+  getLinks: (session: string) => request<Links>('/api/room/links', { session }),
+
+  /** Forget this device: clears the remembered-access cookie. */
+  logout: () => request<void>('/api/room/logout', { method: 'POST' }),
+
+  rotateLinks: (session: string) => request<Links>('/api/room/links/rotate', { method: 'POST', session }),
+
+  getChat: (session: string, opts: { before?: number; limit?: number } = {}) => {
     const q = new URLSearchParams();
     if (opts.before) q.set('before', String(opts.before));
     q.set('limit', String(opts.limit ?? 100));
-    return request<ChatHistoryResponse>(`/api/rooms/${encodeURIComponent(id)}/chat?${q}`, { session });
+    return request<ChatHistoryResponse>(`/api/room/chat?${q}`, { session });
   },
 
-  postChat: (id: string, session: string, text: string) =>
-    request<ChatMessage>(`/api/rooms/${encodeURIComponent(id)}/chat`, {
+  postChat: (session: string, text: string) =>
+    request<ChatMessage>('/api/room/chat', {
       method: 'POST',
       body: JSON.stringify({ text }),
       session,
@@ -83,15 +89,10 @@ export const api = {
   deleteMedia: (session: string, id: string) =>
     request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', session }),
 
-  getPlayback: (id: string, session: string) =>
-    request<PlaybackState>(`/api/rooms/${encodeURIComponent(id)}/playback`, { session }),
+  getPlayback: (session: string) => request<PlaybackState>('/api/room/playback', { session }),
 
-  playback: (
-    id: string,
-    session: string,
-    body: { action: string; mediaId?: string; posMs?: number; relative?: boolean },
-  ) =>
-    request<PlaybackState>(`/api/rooms/${encodeURIComponent(id)}/playback`, {
+  playback: (session: string, body: { action: string; mediaId?: string; posMs?: number; relative?: boolean }) =>
+    request<PlaybackState>('/api/room/playback', {
       method: 'POST',
       body: JSON.stringify(body),
       session,
@@ -99,8 +100,8 @@ export const api = {
 
   serverTime: () => request<{ nowMs: number }>('/api/time'),
 
-  patchSettings: (id: string, session: string, patch: Partial<RoomSettings>) =>
-    request<RoomSettings>(`/api/rooms/${encodeURIComponent(id)}/settings`, {
+  patchSettings: (session: string, patch: Partial<RoomSettings>) =>
+    request<RoomSettings>('/api/room/settings', {
       method: 'PATCH',
       body: JSON.stringify(patch),
       session,

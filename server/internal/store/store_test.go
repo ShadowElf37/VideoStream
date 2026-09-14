@@ -19,117 +19,91 @@ func newTestStore(t *testing.T) *Store {
 	return st
 }
 
-func TestCreateAndGetRoom(t *testing.T) {
+func TestRoomIsCreatedOnceAndStable(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
 
-	settings := DefaultSettings()
-	room, err := st.CreateRoom(ctx, "Movie Night", nil, settings)
+	room, err := st.Room(ctx)
 	if err != nil {
-		t.Fatalf("CreateRoom: %v", err)
+		t.Fatalf("Room: %v", err)
 	}
-	if len(room.ID) != 8 {
-		t.Errorf("room ID length = %d, want 8", len(room.ID))
+	if len(room.ViewerKey) != 24 {
+		t.Errorf("viewer key length = %d, want 24", len(room.ViewerKey))
 	}
-	for _, key := range []string{room.InviteKey, room.HostSecret, room.ProjectorKey} {
-		if len(key) != 24 {
-			t.Errorf("key length = %d, want 24", len(key))
-		}
-	}
-	if room.InviteKey == room.HostSecret || room.HostSecret == room.ProjectorKey {
-		t.Error("keys should be distinct")
+	if room.Settings != DefaultSettings() {
+		t.Errorf("settings = %+v, want defaults", room.Settings)
 	}
 
-	got, err := st.GetRoom(ctx, room.ID)
+	again, err := st.Room(ctx)
 	if err != nil {
-		t.Fatalf("GetRoom: %v", err)
+		t.Fatalf("Room again: %v", err)
 	}
-	if got.Name != "Movie Night" {
-		t.Errorf("name = %q", got.Name)
-	}
-	if got.PasswordHash != nil {
-		t.Error("expected no password hash")
-	}
-	if got.Settings != settings {
-		t.Errorf("settings = %+v, want %+v", got.Settings, settings)
+	if again.ViewerKey != room.ViewerKey {
+		t.Error("asking for the room twice produced two different keys")
 	}
 }
 
-func TestGetRoomNotFound(t *testing.T) {
+func TestRotateViewerKey(t *testing.T) {
 	st := newTestStore(t)
-	if _, err := st.GetRoom(context.Background(), "nope"); err != ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
-func TestRoomWithPassword(t *testing.T) {
-	st := newTestStore(t)
-	hash := "bcrypt-hash-stand-in"
-	room, err := st.CreateRoom(context.Background(), "", &hash, DefaultSettings())
+	ctx := context.Background()
+	before, err := st.Room(ctx)
 	if err != nil {
-		t.Fatalf("CreateRoom: %v", err)
+		t.Fatal(err)
 	}
-	got, err := st.GetRoom(context.Background(), room.ID)
+	after, err := st.RotateViewerKey(ctx)
 	if err != nil {
-		t.Fatalf("GetRoom: %v", err)
+		t.Fatalf("RotateViewerKey: %v", err)
 	}
-	if got.PasswordHash == nil || *got.PasswordHash != hash {
-		t.Errorf("password hash = %v, want %q", got.PasswordHash, hash)
+	if after.ViewerKey == before.ViewerKey {
+		t.Error("rotation kept the same key")
+	}
+	if len(after.ViewerKey) != 24 {
+		t.Errorf("rotated key length = %d", len(after.ViewerKey))
+	}
+	if after.RotatedAt.Before(before.RotatedAt) {
+		t.Error("rotated_at went backwards")
+	}
+	if after.Settings != before.Settings {
+		t.Error("rotation changed the settings")
 	}
 }
 
 func TestUpdateSettings(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	room, err := st.CreateRoom(ctx, "Room", nil, DefaultSettings())
-	if err != nil {
-		t.Fatalf("CreateRoom: %v", err)
-	}
 
-	newSettings := proto.RoomSettings{AnyoneCanPause: true, DeafenImpliesMute: true, MaxPreset: proto.Preset720p}
-	if err := st.UpdateSettings(ctx, room.ID, newSettings); err != nil {
+	newSettings := proto.RoomSettings{AnyoneCanPause: false, DeafenImpliesMute: true, MaxPreset: proto.Preset720p}
+	if err := st.UpdateSettings(ctx, newSettings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
 	}
-	got, err := st.GetRoom(ctx, room.ID)
+	got, err := st.Room(ctx)
 	if err != nil {
-		t.Fatalf("GetRoom: %v", err)
+		t.Fatalf("Room: %v", err)
 	}
 	if got.Settings != newSettings {
 		t.Errorf("settings = %+v, want %+v", got.Settings, newSettings)
 	}
 }
 
-func TestUpdateSettingsNotFound(t *testing.T) {
-	st := newTestStore(t)
-	if err := st.UpdateSettings(context.Background(), "nope", DefaultSettings()); err != ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-}
-
 func TestMessagesInsertAndList(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
-	room, err := st.CreateRoom(ctx, "Room", nil, DefaultSettings())
-	if err != nil {
-		t.Fatalf("CreateRoom: %v", err)
-	}
 
 	base := int64(1_700_000_000_000)
 	for i := int64(0); i < 5; i++ {
 		msg := proto.ChatMessage{
-			ID:     NewID(12),
-			RoomID: room.ID,
-			From:   proto.ChatAuthor{Identity: "alice-ab12", Name: "Alice", Color: "#fff"},
-			Text:   "hello",
-			TS:     base + i,
-			Kind:   "user",
+			ID:   NewID(12),
+			From: proto.ChatAuthor{Identity: "alice-ab12", Name: "Alice", Color: "#fff"},
+			Text: "hello",
+			TS:   base + i,
+			Kind: "user",
 		}
 		if err := st.InsertMessage(ctx, msg); err != nil {
 			t.Fatalf("InsertMessage: %v", err)
 		}
 	}
 
-	all, err := st.ListMessages(ctx, room.ID, 0, 100)
+	all, err := st.ListMessages(ctx, 0, 100)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -142,7 +116,7 @@ func TestMessagesInsertAndList(t *testing.T) {
 		}
 	}
 
-	limited, err := st.ListMessages(ctx, room.ID, 0, 2)
+	limited, err := st.ListMessages(ctx, 0, 2)
 	if err != nil {
 		t.Fatalf("ListMessages limited: %v", err)
 	}
@@ -154,7 +128,7 @@ func TestMessagesInsertAndList(t *testing.T) {
 		t.Errorf("limited = %+v", limited)
 	}
 
-	before, err := st.ListMessages(ctx, room.ID, base+3, 100)
+	before, err := st.ListMessages(ctx, base+3, 100)
 	if err != nil {
 		t.Fatalf("ListMessages before: %v", err)
 	}
@@ -165,11 +139,39 @@ func TestMessagesInsertAndList(t *testing.T) {
 
 func TestListMessagesEmpty(t *testing.T) {
 	st := newTestStore(t)
-	msgs, err := st.ListMessages(context.Background(), "no-such-room", 0, 100)
+	msgs, err := st.ListMessages(context.Background(), 0, 100)
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	if msgs == nil || len(msgs) != 0 {
 		t.Errorf("expected empty non-nil slice, got %v", msgs)
+	}
+}
+
+// The legacy many-rooms tables must not survive an upgrade: they had a
+// different messages shape and nothing reads them any more.
+func TestLegacyTablesAreDropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.Exec(`CREATE TABLE rooms (id TEXT PRIMARY KEY); CREATE TABLE messages (id TEXT PRIMARY KEY, room_id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st.Close()
+	var n int
+	if err := st.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('rooms','messages')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d legacy tables still present", n)
 	}
 }

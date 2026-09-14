@@ -22,7 +22,6 @@ const GROUP_WINDOW_MS = 2 * 60_000;
 
 export function ChatTab({ active }: { active: boolean }) {
   const room = useRoomContext();
-  const roomId = useSession((s) => s.roomId);
   const token = useSession((s) => s.token);
   const selfName = useSession((s) => s.name);
   const messages = useChat((s) => s.messages);
@@ -45,10 +44,10 @@ export function ChatTab({ active }: { active: boolean }) {
     if (!token || loaded.current === token.session) return;
     loaded.current = token.session;
     api
-      .getChat(roomId, token.session, { limit: 100 })
+      .getChat(token.session, { limit: 100 })
       .then((r) => useChat.getState().setHistory(r.messages))
       .catch((e) => console.warn('chat history failed', e));
-  }, [roomId, token]);
+  }, [token]);
 
   // Scrolling: stick to bottom unless the user scrolled up.
   const listRef = useRef<HTMLDivElement>(null);
@@ -108,7 +107,6 @@ export function ChatTab({ active }: { active: boolean }) {
     const tempId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const pending: LocalMessage = {
       id: tempId,
-      roomId,
       from: { identity: token.identity, name: selfName || nameOf(token.identity), color: token.color },
       text: body,
       ts: Date.now(),
@@ -119,7 +117,7 @@ export function ChatTab({ active }: { active: boolean }) {
     setAtBottom(true);
     setSending(true);
     try {
-      const real = await api.postChat(roomId, token.session, body);
+      const real = await api.postChat(token.session, body);
       useChat.getState().resolvePending(tempId, real);
     } catch (e) {
       useChat.getState().markFailed(tempId);

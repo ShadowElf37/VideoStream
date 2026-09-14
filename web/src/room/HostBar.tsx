@@ -20,6 +20,7 @@ import { useBufferedRanges } from '@/movie/useBufferedRanges';
 import { cn } from '@/lib/cn';
 import { formatDelay, formatTime, trackLabel } from '@/lib/format';
 import type { QualityPreset } from '@/proto/messages';
+import { usePrefs } from '@/state/prefs';
 import { useSession } from '@/state/session';
 import { Button } from '@/ui/Button';
 import { IconButton } from '@/ui/IconButton';
@@ -46,12 +47,12 @@ export function allowedPresets(max: QualityPreset | undefined): QualityPreset[] 
 export function HostBar({
   visible,
   onPin,
-  onOpenQueue,
+  onOpenLibrary,
   videoRef,
 }: {
   visible: boolean;
   onPin: (v: boolean) => void;
-  onOpenQueue: () => void;
+  onOpenLibrary: () => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
   const mpv = useMpv();
@@ -89,8 +90,11 @@ export function HostBar({
   // A pushed file has one audio track, burned-in subtitles and one bitrate:
   // the tracks were chosen and the quality fixed when it was encoded. These
   // controls exist only for the live projector, where mpv can still change
-  // them mid-playback.
-  const live = !now.hosted;
+  // them mid-playback — and only once the host has switched into projector
+  // mode, so the library-first bar is not full of knobs for a player that is
+  // not in use.
+  const projectorMode = usePrefs((s) => s.projectorMode);
+  const live = !now.hosted && projectorMode;
 
   return (
     <div
@@ -260,8 +264,8 @@ export function HostBar({
             </>
           )}
 
-          <Button size="sm" variant="primary" onClick={onOpenQueue} className="ml-1">
-            <FolderOpen className="size-4" /> Open…
+          <Button size="sm" variant="primary" onClick={onOpenLibrary} className="ml-1">
+            <FolderOpen className="size-4" /> Library
           </Button>
         </div>
       </div>

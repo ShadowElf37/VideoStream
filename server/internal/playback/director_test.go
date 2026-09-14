@@ -26,7 +26,7 @@ type capture struct {
 	states []proto.PlaybackState
 }
 
-func (c *capture) Broadcast(_ context.Context, _, topic string, payload []byte) error {
+func (c *capture) Broadcast(_ context.Context, topic string, payload []byte) error {
 	if topic != proto.TopicPlayback {
 		return nil
 	}
@@ -57,19 +57,17 @@ func newDirector(t *testing.T) (*Director, *capture) {
 	}}), c
 }
 
-const testRoom = "room1"
-
 // The anchor is the whole contract: a client reconstructs its target from it,
 // so a paused room must not advance and a playing one must advance with the
 // clock.
 func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "film"); err != nil {
+	if err := d.Load(ctx, "film"); err != nil {
 		t.Fatal(err)
 	}
 
-	st := d.Snapshot(testRoom)
+	st := d.Snapshot()
 	if st.Paused {
 		t.Fatal("a freshly loaded title should be playing")
 	}
@@ -78,26 +76,26 @@ func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 	}
 
 	time.Sleep(60 * time.Millisecond)
-	advanced := d.Snapshot(testRoom).PosMS
+	advanced := d.Snapshot().PosMS
 	if advanced <= 0 {
 		t.Errorf("position did not advance while playing: %d", advanced)
 	}
 
-	if err := d.SetPaused(ctx, testRoom, true); err != nil {
+	if err := d.SetPaused(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	frozen := d.Snapshot(testRoom).PosMS
+	frozen := d.Snapshot().PosMS
 	time.Sleep(60 * time.Millisecond)
-	if again := d.Snapshot(testRoom).PosMS; again != frozen {
+	if again := d.Snapshot().PosMS; again != frozen {
 		t.Errorf("position moved while paused: %d then %d", frozen, again)
 	}
 
 	// Resuming must continue from where it stopped, not from where the clock
 	// would have carried it.
-	if err := d.SetPaused(ctx, testRoom, false); err != nil {
+	if err := d.SetPaused(ctx, false); err != nil {
 		t.Fatal(err)
 	}
-	if resumed := d.Snapshot(testRoom).PosMS; resumed < frozen || resumed > frozen+200 {
+	if resumed := d.Snapshot().PosMS; resumed < frozen || resumed > frozen+200 {
 		t.Errorf("resumed at %d, want to continue from about %d", resumed, frozen)
 	}
 }
@@ -107,25 +105,25 @@ func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 func TestGenerationChangesOnEveryDiscontinuity(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "film"); err != nil {
+	if err := d.Load(ctx, "film"); err != nil {
 		t.Fatal(err)
 	}
 
-	seen := map[int64]bool{d.Snapshot(testRoom).Gen: true}
+	seen := map[int64]bool{d.Snapshot().Gen: true}
 	steps := []struct {
 		name string
 		do   func()
 	}{
-		{"pause", func() { _ = d.SetPaused(ctx, testRoom, true) }},
-		{"resume", func() { _ = d.SetPaused(ctx, testRoom, false) }},
-		{"seek", func() { _, _ = d.Seek(ctx, testRoom, 30_000, false) }},
-		{"relative seek", func() { _, _ = d.Seek(ctx, testRoom, -10_000, true) }},
-		{"toggle", func() { _, _ = d.TogglePause(ctx, testRoom) }},
-		{"stop", func() { d.Stop(ctx, testRoom) }},
+		{"pause", func() { _ = d.SetPaused(ctx, true) }},
+		{"resume", func() { _ = d.SetPaused(ctx, false) }},
+		{"seek", func() { _, _ = d.Seek(ctx, 30_000, false) }},
+		{"relative seek", func() { _, _ = d.Seek(ctx, -10_000, true) }},
+		{"toggle", func() { _, _ = d.TogglePause(ctx) }},
+		{"stop", func() { d.Stop(ctx) }},
 	}
 	for _, s := range steps {
 		s.do()
-		g := d.Snapshot(testRoom).Gen
+		g := d.Snapshot().Gen
 		if seen[g] {
 			t.Errorf("%s did not change gen (still %d)", s.name, g)
 		}
@@ -136,11 +134,11 @@ func TestGenerationChangesOnEveryDiscontinuity(t *testing.T) {
 func TestSeek(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "film"); err != nil {
+	if err := d.Load(ctx, "film"); err != nil {
 		t.Fatal(err)
 	}
 
-	landed, err := d.Seek(ctx, testRoom, 120_000, false)
+	landed, err := d.Seek(ctx, 120_000, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +146,7 @@ func TestSeek(t *testing.T) {
 		t.Errorf("absolute seek landed at %d, want 120000", landed)
 	}
 
-	if landed, err = d.Seek(ctx, testRoom, -20_000, true); err != nil {
+	if landed, err = d.Seek(ctx, -20_000, true); err != nil {
 		t.Fatal(err)
 	}
 	if landed < 99_000 || landed > 101_000 {
@@ -157,7 +155,7 @@ func TestSeek(t *testing.T) {
 
 	// Seeking before the start clamps rather than going negative, which would
 	// put every client's target in the past.
-	if landed, err = d.Seek(ctx, testRoom, -999_000, true); err != nil {
+	if landed, err = d.Seek(ctx, -999_000, true); err != nil {
 		t.Fatal(err)
 	}
 	if landed != 0 {
@@ -165,7 +163,7 @@ func TestSeek(t *testing.T) {
 	}
 
 	// And past the end clamps to the duration.
-	if landed, err = d.Seek(ctx, testRoom, 99_999_999, false); err != nil {
+	if landed, err = d.Seek(ctx, 99_999_999, false); err != nil {
 		t.Fatal(err)
 	}
 	if landed != 7_200_000 {
@@ -176,13 +174,13 @@ func TestSeek(t *testing.T) {
 func TestTransportNeedsMedia(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.SetPaused(ctx, testRoom, true); err == nil {
+	if err := d.SetPaused(ctx, true); err == nil {
 		t.Error("pausing an idle room was accepted")
 	}
-	if _, err := d.Seek(ctx, testRoom, 1000, false); err == nil {
+	if _, err := d.Seek(ctx, 1000, false); err == nil {
 		t.Error("seeking an idle room was accepted")
 	}
-	if err := d.Load(ctx, testRoom, "missing"); err == nil {
+	if err := d.Load(ctx, "missing"); err == nil {
 		t.Error("loading a title that does not exist was accepted")
 	}
 }
@@ -193,18 +191,18 @@ func TestEnqueueAndAdvance(t *testing.T) {
 
 	// Enqueuing into an idle room starts it, rather than queueing behind
 	// nothing.
-	if err := d.Enqueue(ctx, testRoom, "short"); err != nil {
+	if err := d.Enqueue(ctx, "short"); err != nil {
 		t.Fatal(err)
 	}
-	if st := d.Snapshot(testRoom); st.MediaID != "short" || st.Idle {
+	if st := d.Snapshot(); st.MediaID != "short" || st.Idle {
 		t.Fatalf("enqueue on an idle room did not start it: %+v", st)
 	}
 
 	// A second one queues behind it instead of interrupting.
-	if err := d.Enqueue(ctx, testRoom, "next"); err != nil {
+	if err := d.Enqueue(ctx, "next"); err != nil {
 		t.Fatal(err)
 	}
-	st := d.Snapshot(testRoom)
+	st := d.Snapshot()
 	if st.MediaID != "short" {
 		t.Errorf("enqueue interrupted playback: now playing %q", st.MediaID)
 	}
@@ -219,12 +217,12 @@ func TestEnqueueAndAdvance(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if d.Snapshot(testRoom).MediaID == "next" {
+		if d.Snapshot().MediaID == "next" {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	final := d.Snapshot(testRoom)
+	final := d.Snapshot()
 	if final.MediaID != "next" {
 		t.Fatalf("playlist did not advance when the title ended: still %q at %d ms",
 			final.MediaID, final.PosMS)
@@ -245,7 +243,7 @@ func TestEnqueueAndAdvance(t *testing.T) {
 func TestEndWithEmptyQueueHolds(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "short"); err != nil {
+	if err := d.Load(ctx, "short"); err != nil {
 		t.Fatal(err)
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
@@ -254,12 +252,12 @@ func TestEndWithEmptyQueueHolds(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if d.Snapshot(testRoom).Paused {
+		if d.Snapshot().Paused {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	st := d.Snapshot(testRoom)
+	st := d.Snapshot()
 	if !st.Paused {
 		t.Fatal("still playing past the end")
 	}
@@ -274,12 +272,12 @@ func TestEndWithEmptyQueueHolds(t *testing.T) {
 func TestEveryCommandBroadcasts(t *testing.T) {
 	d, c := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "film"); err != nil {
+	if err := d.Load(ctx, "film"); err != nil {
 		t.Fatal(err)
 	}
 	before := len(c.states)
-	_ = d.SetPaused(ctx, testRoom, true)
-	_, _ = d.Seek(ctx, testRoom, 1000, false)
+	_ = d.SetPaused(ctx, true)
+	_, _ = d.Seek(ctx, 1000, false)
 	if len(c.states) < before+2 {
 		t.Errorf("%d broadcasts for 2 commands; clients would not hear about them",
 			len(c.states)-before)
@@ -292,49 +290,29 @@ func TestEveryCommandBroadcasts(t *testing.T) {
 	}
 }
 
-func TestRoomsAreIndependent(t *testing.T) {
-	d, _ := newDirector(t)
-	ctx := context.Background()
-	if err := d.Load(ctx, "a", "film"); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Load(ctx, "b", "next"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := d.Seek(ctx, "a", 500_000, false); err != nil {
-		t.Fatal(err)
-	}
-	if st := d.Snapshot("b"); st.PosMS > 1000 {
-		t.Errorf("seeking room a moved room b to %d", st.PosMS)
-	}
-	if st := d.Snapshot("b"); st.MediaID != "next" {
-		t.Errorf("room b is playing %q", st.MediaID)
-	}
-}
-
 // Pressing play on a finished film restarts it. Resuming at the end would be
 // noticed by the run loop as "past the duration" and paused straight back, so
 // play would appear to do nothing.
 func TestPlayAtEndRestarts(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "film"); err != nil {
+	if err := d.Load(ctx, "film"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Seek(ctx, testRoom, 7_200_000, false); err != nil {
+	if _, err := d.Seek(ctx, 7_200_000, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetPaused(ctx, testRoom, true); err != nil {
+	if err := d.SetPaused(ctx, true); err != nil {
 		t.Fatal(err)
 	}
-	if st := d.Snapshot(testRoom); st.PosMS != st.DurationMS {
+	if st := d.Snapshot(); st.PosMS != st.DurationMS {
 		t.Fatalf("setup: expected to be parked at the end, got %d", st.PosMS)
 	}
 
-	if err := d.SetPaused(ctx, testRoom, false); err != nil {
+	if err := d.SetPaused(ctx, false); err != nil {
 		t.Fatal(err)
 	}
-	st := d.Snapshot(testRoom)
+	st := d.Snapshot()
 	if st.Paused {
 		t.Error("still paused after pressing play")
 	}
@@ -346,19 +324,19 @@ func TestPlayAtEndRestarts(t *testing.T) {
 func TestTogglePlayAtEndRestarts(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, testRoom, "film"); err != nil {
+	if err := d.Load(ctx, "film"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Seek(ctx, testRoom, 7_200_000, false); err != nil {
+	if _, err := d.Seek(ctx, 7_200_000, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.TogglePause(ctx, testRoom); err != nil { // -> paused at end
+	if _, err := d.TogglePause(ctx); err != nil { // -> paused at end
 		t.Fatal(err)
 	}
-	if _, err := d.TogglePause(ctx, testRoom); err != nil { // -> play
+	if _, err := d.TogglePause(ctx); err != nil { // -> play
 		t.Fatal(err)
 	}
-	if st := d.Snapshot(testRoom); st.PosMS > 1000 {
+	if st := d.Snapshot(); st.PosMS > 1000 {
 		t.Errorf("toggling play at the end resumed at %d ms, want a restart", st.PosMS)
 	}
 }

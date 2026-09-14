@@ -16,11 +16,11 @@ import { useAutoHide } from './hooks';
 import { useMovieTracks, useSmoothness } from './useMovieTracks';
 
 export function Stage({
-  onOpenQueue,
+  onOpenLibrary,
   onToggleFullscreen,
   videoRef,
 }: {
-  onOpenQueue: () => void;
+  onOpenLibrary: () => void;
   onToggleFullscreen: () => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
@@ -28,6 +28,7 @@ export function Stage({
   const mpv = useMpv();
   const role = useSession((s) => s.role);
   const statsOverlay = usePrefs((s) => s.statsOverlay);
+  const projectorMode = usePrefs((s) => s.projectorMode);
   const state = useMpvStore((s) => s.state);
   const projectorOnline = useMpvStore((s) => s.projectorOnline);
   const movie = useMovieTracks();
@@ -42,9 +43,8 @@ export function Stage({
   //
   // Hosted wins when something is loaded, because a room cannot be watching
   // two films at once and the server's answer is the authoritative one.
-  const roomId = useSession((s) => s.roomId);
   const connected = useSession((s) => s.phase) === 'connected';
-  const playback = usePlayback(room, roomId, connected);
+  const playback = usePlayback(room, connected);
   const hosted = !!playback.state && !playback.state.idle && !!playback.state.url;
   const transport = useTransport(hosted);
 
@@ -163,7 +163,7 @@ export function Stage({
         <MovieVideo track={movie.video} paused={paused} onStalled={onStalled} videoRef={videoRef} />
       )}
 
-      {!hasMovie && <WaitingState projectorOnline={projectorOnline} />}
+      {!hasMovie && <WaitingState projectorOnline={projectorOnline} projectorMode={projectorMode} isHost={isHost} onOpenLibrary={onOpenLibrary} />}
       {hasMovie && paused && !stalled && <PausedGlyph />}
       {hasMovie && stalled && !paused && <BufferingGlyph />}
 
@@ -174,7 +174,7 @@ export function Stage({
       <SpeakingChips />
       <ReactionsLayer />
 
-      {isHost ? <HostBar visible={bar.visible} onPin={bar.pin} onOpenQueue={onOpenQueue} videoRef={videoRef} /> : <ViewerBar visible={bar.visible} videoRef={videoRef} />}
+      {isHost ? <HostBar visible={bar.visible} onPin={bar.pin} onOpenLibrary={onOpenLibrary} videoRef={videoRef} /> : <ViewerBar visible={bar.visible} videoRef={videoRef} />}
     </div>
   );
 }

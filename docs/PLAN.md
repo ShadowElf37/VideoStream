@@ -274,3 +274,43 @@ The three worth knowing about without opening the tracker:
   cannot sustain the bitrate stalls where WebRTC would have gone blurry. This
   is what restores a real quality choice, and it wants deciding alongside #15
   (HLS), which is what would let a rendition change mid-film.
+
+## Status (2026-09-13, third session): one room, one password
+
+The many-rooms model is gone. Creating and naming a room, three links per
+room, a landing page to paste links into — all of it was friction for a
+group that only ever has one party going. The site is now **one room** and
+its URL is the door:
+
+- **The password** (`ROOM_PASSWORD`) makes a host. Typed once per device:
+  the server sets a signed, HttpOnly, 400-day cookie that only ever
+  upgrades. There is no host link any more; the desktop projector joins
+  with the same password (`--password` / `VS_PASSWORD`).
+- **The invite link** (`/?k=…`) makes a viewer, and also sets the cookie,
+  so a friend who has been in keeps getting in.
+- **Rotation.** An occupancy watcher polls LiveKit every ten seconds; once
+  the room has stood empty for `LINKS_ROTATE_AFTER` (default two minutes)
+  the viewer key is replaced, so a link that sat in a chat log for a week
+  admits no strangers. A host can refresh it on demand. Cookies survive
+  rotation by design.
+- **The client** rewrites its address bar to the invite link after joining,
+  so "copy the URL" is an invitation, and drops back to the door with an
+  explanation if a reconnect is refused.
+
+The web app is reorganised around the server library, Plex-style: the
+sidebar's third tab is **Library** (titles on the server, now playing, up
+next), and the desktop projector is a segmented **Projector mode** behind a
+button at the bottom of it — its file browser and URL box only appear once
+pressed, and pressing it while a server title is playing stops that title
+for everyone, with a confirmation. The stage's empty state talks about the
+Library unless projector mode is on.
+
+Verified in a headless browser against the real stack: stranger sees the
+password prompt; password → host with the invite link in the address bar;
+link → viewer; both browsers play a library title within 0.00 s of each
+other; after a rotation the old link is refused for a stranger while the
+remembered viewer and host still get in without a key.
+
+Retired: `POST /api/rooms`, `/r/<id>`, host and projector keys, the
+`rooms`/`messages` tables (dropped on first start; they only held test
+parties), the People tab's projector card, `parseRoomLink`.

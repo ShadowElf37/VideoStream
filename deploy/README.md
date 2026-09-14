@@ -6,7 +6,7 @@ One `docker compose` stack on a single Oracle Cloud Ampere A1 instance:
 |---|---|---|---|
 | `caddy` | `caddy:2` | bridge, publishes 80/443 | TLS (Let's Encrypt), reverse proxy, HTTP/3 |
 | `livekit` | `livekit/livekit-server:v1.13` | **host** | SFU + embedded TURN |
-| `app` | built here from `server/Dockerfile` | bridge | rooms, tokens, chat history, serves the web build |
+| `app` | built here from `server/Dockerfile` | bridge | the door (password, invite link, cookies), tokens, chat history, the playback director, serves the web build |
 | `redis` | `redis:7-alpine` | host | *(profile `ingress`)* job queue for ingress |
 | `ingress` | `livekit/ingress:v1.5` | host | *(profile `ingress`)* WHIP/RTMP publishing |
 
@@ -139,6 +139,24 @@ sudo docker compose logs livekit | grep -i turn
 
 If Caddy loops on ACME failures, DNS has not propagated or the VCN rule for TCP
 80 is missing.
+
+### The door
+
+There is one room. `https://<DOMAIN>` is its door, and three things get
+through it:
+
+- **The room password** (`ROOM_PASSWORD` in `.env`): what you type to get in
+  as host. Once per device — the server sets a long-lived cookie.
+- **The invite link** (`https://<DOMAIN>/?k=…`): shown inside the room in the
+  Invite dialog; send it to friends. It stops working once the room has stood
+  empty for `LINKS_ROTATE_AFTER` (default two minutes), and a host can refresh
+  it at any time. Friends who have been in before are remembered by cookie and
+  keep getting in.
+- **The cookie**: HttpOnly, signed with `SESSION_SECRET`, kept for 400 days,
+  only ever upgraded. "Forget this device" in the Invite dialog clears it.
+
+The desktop projector joins with the password too:
+`VS_PASSWORD=… projector --room https://<DOMAIN> file.mkv`.
 
 ### Media, and how a film reaches the room
 

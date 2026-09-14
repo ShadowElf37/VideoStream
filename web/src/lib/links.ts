@@ -94,21 +94,3 @@ export function mentionsName(text: string, name: string): boolean {
   if (!name) return false;
   return tokenize(text, [name]).some((t) => t.type === 'mention' && t.name === name);
 }
-
-/** Parse an invite/host/projector link (or bare path) into a router path, or null. */
-export function parseRoomLink(input: string): { path: string; roomId: string; kind: 'invite' | 'host' | 'projector' | 'plain' } | null {
-  const s = input.trim();
-  if (!s) return null;
-  let url: URL;
-  try {
-    url = s.startsWith('/') ? new URL(s, 'http://local') : new URL(s.includes('://') ? s : `https://${s}`);
-  } catch {
-    return null;
-  }
-  const m = url.pathname.match(/^\/r\/([^/]+)\/?$/);
-  if (!m) return null;
-  const roomId = decodeURIComponent(m[1]!);
-  const q = url.searchParams;
-  const kind = q.has('h') ? 'host' : q.has('k') ? 'invite' : q.has('p') ? 'projector' : 'plain';
-  return { path: `/r/${encodeURIComponent(roomId)}${url.search}`, roomId, kind };
-}

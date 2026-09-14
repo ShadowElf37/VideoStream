@@ -37,7 +37,7 @@ export interface Playback {
   ready: boolean;
 }
 
-export function usePlayback(room: Room | null, roomId: string, connected: boolean): Playback {
+export function usePlayback(room: Room | null, connected: boolean): Playback {
   const [state, setState] = useState<PlaybackState | null>(null);
   const [offsetMs, setOffsetMs] = useState<number | null>(null);
   const window = useRef<ClockSample[]>([]);
@@ -46,12 +46,12 @@ export function usePlayback(room: Room | null, roomId: string, connected: boolea
   // broadcast, and again on reconnect where any number of them were missed.
   const refetch = useCallback(() => {
     const session = useSession.getState().token?.session;
-    if (!session || !roomId) return;
+    if (!session) return;
     void api
-      .getPlayback(roomId, session)
+      .getPlayback(session)
       .then(setState)
       .catch(() => undefined);
-  }, [roomId]);
+  }, []);
 
   useEffect(() => {
     if (!connected) return;

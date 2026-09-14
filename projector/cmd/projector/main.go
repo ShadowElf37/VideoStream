@@ -42,7 +42,8 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func main() {
 	var roots stringList
-	roomLink := flag.String("room", "", "projector link (https://host/r/<id>?p=<projectorKey>)")
+	roomLink := flag.String("room", "", "the party's URL (https://host); joins with --password")
+	password := flag.String("password", os.Getenv("VS_PASSWORD"), "the room password (default: $VS_PASSWORD)")
 	lkURL := flag.String("url", "", "LiveKit websocket URL (dev; use with --token)")
 	lkToken := flag.String("token", "", "LiveKit join token (dev; use with --url)")
 	flag.Var(&roots, "media-root", "directory the host UI may browse and load from (repeatable)")
@@ -59,6 +60,7 @@ func main() {
 	log := newLogger(*logLevel)
 	if err := run(log, runOpts{
 		roomLink:  *roomLink,
+		password:  *password,
 		lkURL:     *lkURL,
 		lkToken:   *lkToken,
 		roots:     roots,
@@ -78,6 +80,7 @@ func main() {
 
 type runOpts struct {
 	roomLink  string
+	password  string
 	lkURL     string
 	lkToken   string
 	roots     []string
@@ -158,13 +161,13 @@ func run(log *slog.Logger, o runOpts) error {
 	// broadcast arrives.
 	var settings proto.RoomSettings
 	if o.roomLink != "" {
-		wsURL, token, settings, err = fetchToken(ctx, o.roomLink)
+		wsURL, token, settings, err = fetchToken(ctx, o.roomLink, o.password)
 		if err != nil {
 			return err
 		}
 	}
 	if wsURL == "" || token == "" {
-		return errors.New("need --room, or both --url and --token")
+		return errors.New("need --room (plus --password or $VS_PASSWORD), or both --url and --token")
 	}
 
 	cand, err := encoder.Probe(ctx, log, o.ffmpeg, o.encoder)
@@ -486,26 +489,29 @@ func (p *projector) statusLoop(ctx context.Context) {
 	}
 }
 
-// fetchToken turns a projector link into a LiveKit URL and join token by
-// calling the app server's POST /api/rooms/{id}/token endpoint.
-func fetchToken(ctx context.Context, link string) (string, string, proto.RoomSettings, error) {
+// fetchToken gets a LiveKit URL and join token from the app server's
+// POST /api/room/token. The projector is a host-level thing, so it gets in
+// the way a host does: with the room password. There is one room, so the
+// URL only needs the origin; a viewer link (?k=…) is accepted and its key
+// ignored, since a viewer key cannot drive the projector anyway.
+func fetchToken(ctx context.Context, link, password string) (string, string, proto.RoomSettings, error) {
 	var none proto.RoomSettings
 	u, err := url.Parse(link)
 	if err != nil {
-		return "", "", none, fmt.Errorf("bad --room link: %w", err)
+		return "", "", none, fmt.Errorf("bad --room URL: %w", err)
 	}
-	key := u.Query().Get("p")
-	if key == "" {
-		return "", "", none, errors.New("--room link has no ?p=<projectorKey>")
+	if u.Scheme == "" || u.Host == "" {
+		return "", "", none, fmt.Errorf("--room should be the party's URL, like https://watch.example.com, got %q", link)
 	}
-	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
-	if len(parts) < 2 || parts[len(parts)-2] != "r" {
-		return "", "", none, fmt.Errorf("--room link path should look like /r/<roomId>, got %q", u.Path)
+	if u.Query().Get("p") != "" {
+		return "", "", none, errors.New("projector links are gone: pass the party's URL as --room and the room password as --password (or $VS_PASSWORD)")
 	}
-	roomID := parts[len(parts)-1]
+	if password == "" {
+		return "", "", none, errors.New("the projector joins with the room password: --password or $VS_PASSWORD")
+	}
 
-	body, _ := json.Marshal(proto.TokenRequest{Name: "Projector", ProjectorKey: key})
-	endpoint := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/api/rooms/" + roomID + "/token"}).String()
+	body, _ := json.Marshal(proto.TokenRequest{Name: "Projector", Password: password, Projector: true})
+	endpoint := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/api/room/token"}).String()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", "", none, err

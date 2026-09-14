@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isImageUrl, mentionsName, parseRoomLink, tokenize } from './links';
+import { isImageUrl, mentionsName, tokenize } from './links';
 
 describe('tokenize', () => {
   it('returns plain text untouched', () => {
@@ -50,22 +50,5 @@ describe('isImageUrl', () => {
     expect(isImageUrl('https://x.com/a.GIF?x=1')).toBe(true);
     expect(isImageUrl('https://x.com/a.html')).toBe(false);
     expect(isImageUrl('not a url')).toBe(false);
-  });
-});
-
-describe('parseRoomLink', () => {
-  it('parses absolute links', () => {
-    expect(parseRoomLink('https://watch.example.tld/r/abc123?k=inv')).toEqual({
-      path: '/r/abc123?k=inv',
-      roomId: 'abc123',
-      kind: 'invite',
-    });
-    expect(parseRoomLink('https://watch.example.tld/r/abc?h=sec')?.kind).toBe('host');
-    expect(parseRoomLink('watch.example.tld/r/abc?p=proj')?.kind).toBe('projector');
-  });
-  it('parses bare paths and rejects junk', () => {
-    expect(parseRoomLink('/r/xyz')).toEqual({ path: '/r/xyz', roomId: 'xyz', kind: 'plain' });
-    expect(parseRoomLink('https://example.com/other')).toBeNull();
-    expect(parseRoomLink('')).toBeNull();
   });
 });

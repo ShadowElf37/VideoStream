@@ -1,11 +1,12 @@
 import { useLocalParticipant, useParticipants } from '@livekit/components-react';
 import { ConnectionQuality, type Participant } from 'livekit-client';
-import { Clapperboard, Pause, Wifi, WifiOff } from 'lucide-react';
+import { Clapperboard, Library as LibraryIcon, Pause, Radio, Wifi, WifiOff } from 'lucide-react';
 import { useEffect } from 'react';
 import { cn } from '@/lib/cn';
 import { colorFor } from '@/lib/colors';
 import { useSession, type Reaction, type Toast } from '@/state/session';
 import { Avatar } from '@/ui/Avatar';
+import { Button } from '@/ui/Button';
 import { Spinner } from '@/ui/Spinner';
 import { Tooltip } from '@/ui/Tooltip';
 import { useParticipantLive } from './hooks';
@@ -148,28 +149,54 @@ export function BufferingGlyph() {
   );
 }
 
-export function WaitingState({ projectorOnline }: { projectorOnline: boolean }) {
+export function WaitingState({
+  projectorOnline,
+  projectorMode,
+  isHost,
+  onOpenLibrary,
+}: {
+  projectorOnline: boolean;
+  projectorMode: boolean;
+  isHost: boolean;
+  onOpenLibrary: () => void;
+}) {
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'https://…';
   return (
     <div className="absolute inset-0 flex items-center justify-center p-4 sm:p-6">
       <div className="anim-fade-in max-w-md text-center">
         <div className="mx-auto size-12 sm:size-16 rounded-2xl glass flex items-center justify-center text-accent mb-3 sm:mb-4">
-          <Clapperboard className="size-6 sm:size-8" />
+          {projectorMode ? <Radio className="size-6 sm:size-8" /> : <Clapperboard className="size-6 sm:size-8" />}
         </div>
-        <h2 className="text-base sm:text-lg font-semibold tracking-tight">{projectorOnline ? 'Projector is idle' : 'Waiting for the projector…'}</h2>
-        {/* The how-to is desktop-only: a phone stage is too short for it and phones never run the projector. */}
-        <div className="hidden sm:block">
-          <p className="text-muted mt-1.5 text-sm">
-            {projectorOnline
-              ? 'It is connected but nothing is loaded yet. The host can pick a file from the Queue tab.'
-              : 'On the machine with the files, start the projector with the projector link:'}
-          </p>
-          {!projectorOnline && (
-            <pre className="mt-3 text-left text-[12px] font-mono glass rounded-xl px-3 py-2.5 whitespace-pre-wrap break-all">
-              projector --room &quot;https://…/r/&lt;id&gt;?p=&lt;projectorKey&gt;&quot; ~/Movies/film.mkv
-            </pre>
-          )}
-          <p className="text-muted mt-3 text-xs">Voice chat works meanwhile.</p>
-        </div>
+        {projectorMode ? (
+          <>
+            <h2 className="text-base sm:text-lg font-semibold tracking-tight">{projectorOnline ? 'Projector is idle' : 'Waiting for the projector…'}</h2>
+            {/* The how-to is desktop-only: a phone stage is too short for it and phones never run the projector. */}
+            <div className="hidden sm:block">
+              <p className="text-muted mt-1.5 text-sm">
+                {projectorOnline
+                  ? 'It is connected but nothing is loaded. Pick a file or a URL in the projector panel of the Library tab.'
+                  : 'Start it on the machine holding the files, with the room password:'}
+              </p>
+              {!projectorOnline && (
+                <pre className="mt-3 text-left text-[12px] font-mono glass rounded-xl px-3 py-2.5 whitespace-pre-wrap break-all">
+                  VS_PASSWORD=… projector --room {origin} ~/Movies/film.mkv
+                </pre>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="text-base sm:text-lg font-semibold tracking-tight">Nothing is playing</h2>
+            <p className="text-muted mt-1.5 text-sm">
+              {isHost ? 'Pick a title from the Library.' : 'The host will pick something from the Library. Voice chat works meanwhile.'}
+            </p>
+            {isHost && (
+              <Button variant="primary" size="sm" className="mt-4" onClick={onOpenLibrary}>
+                <LibraryIcon className="size-4" /> Open the Library
+              </Button>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

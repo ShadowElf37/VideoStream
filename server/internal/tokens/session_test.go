@@ -9,7 +9,6 @@ import (
 func TestSignVerifyRoundTrip(t *testing.T) {
 	secret := []byte("test-secret")
 	sess := Session{
-		RoomID:   "room1",
 		Identity: "alice-ab12",
 		Name:     "Alice",
 		Color:    "#e57373",
@@ -36,7 +35,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 
 func TestVerifyTamperedSignatureFails(t *testing.T) {
 	secret := []byte("test-secret")
-	sess := Session{RoomID: "room1", Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(time.Hour).Unix()}
+	sess := Session{Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(time.Hour).Unix()}
 	token, err := Sign(secret, sess)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
@@ -51,7 +50,7 @@ func TestVerifyTamperedSignatureFails(t *testing.T) {
 
 func TestVerifyTamperedBodyFails(t *testing.T) {
 	secret := []byte("test-secret")
-	sess := Session{RoomID: "room1", Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(time.Hour).Unix()}
+	sess := Session{Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(time.Hour).Unix()}
 	token, err := Sign(secret, sess)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
@@ -65,7 +64,7 @@ func TestVerifyTamperedBodyFails(t *testing.T) {
 }
 
 func TestVerifyWrongSecretFails(t *testing.T) {
-	sess := Session{RoomID: "room1", Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(time.Hour).Unix()}
+	sess := Session{Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(time.Hour).Unix()}
 	token, err := Sign([]byte("secret-a"), sess)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
@@ -77,7 +76,7 @@ func TestVerifyWrongSecretFails(t *testing.T) {
 
 func TestVerifyExpiredFails(t *testing.T) {
 	secret := []byte("test-secret")
-	sess := Session{RoomID: "room1", Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(-time.Minute).Unix()}
+	sess := Session{Identity: "id", Name: "n", Color: "#fff", Role: "viewer", Exp: time.Now().Add(-time.Minute).Unix()}
 	token, err := Sign(secret, sess)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)

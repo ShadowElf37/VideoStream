@@ -15,8 +15,6 @@ const (
 )
 
 func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
 	var before int64
 	if v := r.URL.Query().Get("before"); v != "" {
 		parsed, err := strconv.ParseInt(v, 10, 64)
@@ -40,7 +38,7 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 		limit = maxChatLimit
 	}
 
-	msgs, err := s.chat.History(r.Context(), id, before, limit)
+	msgs, err := s.chat.History(r.Context(), before, limit)
 	if err != nil {
 		s.logger.Error("get chat history failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -51,7 +49,6 @@ func (s *Server) handleGetChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePostChat(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
 	sess := sessionFromContext(r.Context())
 
 	var body struct {
@@ -61,7 +58,7 @@ func (s *Server) handlePostChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	msg, err := s.chat.PostMessage(r.Context(), id, sess.Identity, sess.Name, sess.Color, body.Text)
+	msg, err := s.chat.PostMessage(r.Context(), sess.Identity, sess.Name, sess.Color, body.Text)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusCreated, msg)

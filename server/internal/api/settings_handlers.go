@@ -21,15 +21,16 @@ type settingsPatch struct {
 }
 
 func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
 	sess := sessionFromContext(r.Context())
 	if sess.Role != proto.RoleHost {
 		writeError(w, http.StatusForbidden, "host role required")
 		return
 	}
 
-	room, err := s.getRoomOr404(w, r.Context(), id)
+	room, err := s.rooms.Get(r.Context())
 	if err != nil {
+		s.logger.Error("get room failed", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
@@ -58,18 +59,18 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		systemLines = append(systemLines, fmt.Sprintf("Host changed room settings: max quality = %s", settings.MaxPreset))
 	}
 
-	if err := s.rooms.UpdateSettings(r.Context(), id, settings); err != nil {
+	if err := s.rooms.UpdateSettings(r.Context(), settings); err != nil {
 		s.logger.Error("update settings failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	if err := s.chat.BroadcastSettings(r.Context(), id, settings); err != nil {
-		s.logger.Warn("broadcast settings failed", "room", id, "err", err)
+	if err := s.chat.BroadcastSettings(r.Context(), settings); err != nil {
+		s.logger.Warn("broadcast settings failed", "err", err)
 	}
 	for _, line := range systemLines {
-		if err := s.chat.System(r.Context(), id, line); err != nil {
-			s.logger.Warn("post settings system message failed", "room", id, "err", err)
+		if err := s.chat.System(r.Context(), line); err != nil {
+			s.logger.Warn("post settings system message failed", "err", err)
 		}
 	}
 

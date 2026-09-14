@@ -1,14 +1,14 @@
 import { useParticipants } from '@livekit/components-react';
 import { ConnectionQuality, type Participant } from 'livekit-client';
-import { Crown, Ellipsis, HeadphoneOff, MicOff, MicVocal, Radio } from 'lucide-react';
+import { Crown, Ellipsis, HeadphoneOff, MicOff, MicVocal, UserPlus } from 'lucide-react';
 import { useRef } from 'react';
 import { useAudio } from '@/audio/useAudioModel';
 import { VOICE_VOLUME_MAX } from '@/audio/model';
-import { useMpvStore } from '@/host/useMpv';
 import { cn } from '@/lib/cn';
 import { colorFor } from '@/lib/colors';
 import { useSession } from '@/state/session';
 import { Avatar } from '@/ui/Avatar';
+import { Button } from '@/ui/Button';
 import { Menu, MenuItem, MenuSeparator } from '@/ui/Menu';
 import { Slider } from '@/ui/Slider';
 import { Tooltip } from '@/ui/Tooltip';
@@ -20,8 +20,6 @@ const FEATURE_MODERATION = false;
 
 export function PeopleTab() {
   const participants = useParticipants();
-  const projectorOnline = useMpvStore((s) => s.projectorOnline);
-  const mpv = useMpvStore((s) => s.state);
   const people = participants.filter((p) => !isProjector(p)).sort((a, b) => {
     if (a.isLocal !== b.isLocal) return a.isLocal ? -1 : 1;
     if (isHost(a) !== isHost(b)) return isHost(a) ? -1 : 1;
@@ -30,20 +28,12 @@ export function PeopleTab() {
 
   return (
     <div className="p-2">
-      <div className="flex items-center gap-3 px-2 py-2 rounded-xl bg-panel border border-hairline mb-2">
-        <span className={cn('size-8 rounded-lg inline-flex items-center justify-center', projectorOnline ? 'bg-accent/15 text-accent' : 'bg-hover text-muted')}>
-          <Radio className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-medium">Projector</div>
-          <div className="text-[11px] text-muted truncate">
-            {!projectorOnline ? 'offline' : mpv && !mpv.idle ? `live · ${mpv.mediaTitle || 'playing'}` : 'idle'}
-          </div>
-        </div>
-        <span className={cn('size-2 rounded-full', projectorOnline ? (mpv && !mpv.idle ? 'bg-ok' : 'bg-accent') : 'bg-muted/40')} />
+      <div className="flex items-center gap-2 px-2 pt-1 pb-2">
+        <span className="flex-1 text-[11px] uppercase tracking-wider text-muted">{people.length} in the room</span>
+        <Button size="sm" variant="subtle" onClick={() => useSession.getState().setInviteOpen(true)}>
+          <UserPlus className="size-3.5" /> Invite
+        </Button>
       </div>
-
-      <div className="px-2 pt-1 pb-1 text-[11px] uppercase tracking-wider text-muted">{people.length} in the room</div>
       <ul className="space-y-0.5">
         {people.map((p) => (
           <PersonRow key={p.identity} p={p} />

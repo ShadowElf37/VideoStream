@@ -34,7 +34,7 @@ func (s *Server) handleGetPlayback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this server has no media library")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.director.Snapshot(r.PathValue("id")))
+	writeJSON(w, http.StatusOK, s.director.Snapshot())
 }
 
 // handlePlaybackCommand drives the room. Host-only, except pause, which the
@@ -45,7 +45,6 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "this server has no media library")
 		return
 	}
-	roomID := r.PathValue("id")
 	sess := sessionFromContext(r.Context())
 
 	var cmd playbackCommand
@@ -54,8 +53,10 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sess.Role != proto.RoleHost {
-		room, err := s.getRoomOr404(w, r.Context(), roomID)
+		room, err := s.rooms.Get(r.Context())
 		if err != nil {
+			s.logger.Error("get room failed", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		pauseish := cmd.Action == "pause" || cmd.Action == "play" || cmd.Action == "toggle"
@@ -69,19 +70,19 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch cmd.Action {
 	case "load":
-		err = s.director.Load(ctx, roomID, cmd.MediaID)
+		err = s.director.Load(ctx, cmd.MediaID)
 	case "enqueue":
-		err = s.director.Enqueue(ctx, roomID, cmd.MediaID)
+		err = s.director.Enqueue(ctx, cmd.MediaID)
 	case "play":
-		err = s.director.SetPaused(ctx, roomID, false)
+		err = s.director.SetPaused(ctx, false)
 	case "pause":
-		err = s.director.SetPaused(ctx, roomID, true)
+		err = s.director.SetPaused(ctx, true)
 	case "toggle":
-		_, err = s.director.TogglePause(ctx, roomID)
+		_, err = s.director.TogglePause(ctx)
 	case "seek":
-		_, err = s.director.Seek(ctx, roomID, cmd.PosMS, cmd.Relative)
+		_, err = s.director.Seek(ctx, cmd.PosMS, cmd.Relative)
 	case "stop":
-		s.director.Stop(ctx, roomID)
+		s.director.Stop(ctx)
 	default:
 		writeError(w, http.StatusBadRequest, "unknown action "+cmd.Action)
 		return
@@ -98,5 +99,5 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, s.director.Snapshot(roomID))
+	writeJSON(w, http.StatusOK, s.director.Snapshot())
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config holds all runtime configuration for the app server.
@@ -31,6 +32,15 @@ type Config struct {
 	// MediaRoot is the directory of pushed titles (see internal/media).
 	// Empty disables the library, and the UI stops offering it.
 	MediaRoot string
+
+	// RoomPassword is what a host types at the door. Friends never need it:
+	// they get the viewer link, and the door remembers everyone who has been
+	// in before.
+	RoomPassword string
+	// LinksRotateAfter is how long the room must stand empty before the
+	// viewer key is rotated, so a link that leaked into an old group chat
+	// stops working. Zero disables automatic rotation.
+	LinksRotateAfter time.Duration
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -45,11 +55,21 @@ func Load() (*Config, error) {
 		LiveKitAPISecret: os.Getenv("LIVEKIT_API_SECRET"),
 		DBPath:           getEnv("DB_PATH", "./data/videostream.db"),
 		MediaRoot:        os.Getenv("MEDIA_ROOT"),
+		RoomPassword:     os.Getenv("ROOM_PASSWORD"),
 	}
 
 	if cfg.LiveKitAPIKey == "" || cfg.LiveKitAPISecret == "" {
 		return nil, errors.New("LIVEKIT_API_KEY and LIVEKIT_API_SECRET are required")
 	}
+	if cfg.RoomPassword == "" {
+		return nil, errors.New("ROOM_PASSWORD is required: it is the only thing standing between the room and the internet")
+	}
+
+	rotate, err := time.ParseDuration(getEnv("LINKS_ROTATE_AFTER", "2m"))
+	if err != nil || rotate < 0 {
+		return nil, fmt.Errorf("LINKS_ROTATE_AFTER must be a duration like 2m or 0: %q", os.Getenv("LINKS_ROTATE_AFTER"))
+	}
+	cfg.LinksRotateAfter = rotate
 
 	cfg.LiveKitURL = os.Getenv("LIVEKIT_URL")
 	if cfg.LiveKitURL == "" {

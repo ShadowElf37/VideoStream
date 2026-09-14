@@ -25,7 +25,7 @@ func decodeGrants(t *testing.T, jwt, apiKey, apiSecret string) *auth.ClaimGrants
 }
 
 func TestMintLiveKitTokenViewerGrants(t *testing.T) {
-	jwt, err := MintLiveKitToken("key", "secret-at-least-32-bytes-long!!", "room1", "alice-ab12", "Alice", proto.RoleViewer, "#e57373")
+	jwt, err := MintLiveKitToken("key", "secret-at-least-32-bytes-long!!", "alice-ab12", "Alice", proto.RoleViewer, "#e57373")
 	if err != nil {
 		t.Fatalf("MintLiveKitToken: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestMintLiveKitTokenViewerGrants(t *testing.T) {
 	if vg == nil {
 		t.Fatal("expected video grant")
 	}
-	if !vg.RoomJoin || vg.Room != "room1" {
+	if !vg.RoomJoin || vg.Room != "main" {
 		t.Errorf("roomJoin/room = %v/%q", vg.RoomJoin, vg.Room)
 	}
 	if vg.CanPublish == nil || !*vg.CanPublish {
@@ -68,7 +68,7 @@ func TestMintLiveKitTokenViewerGrants(t *testing.T) {
 }
 
 func TestMintLiveKitTokenHostGrants(t *testing.T) {
-	jwt, err := MintLiveKitToken("key", "secret-at-least-32-bytes-long!!", "room1", "bob-cd34", "Bob", proto.RoleHost, "#4dd0e1")
+	jwt, err := MintLiveKitToken("key", "secret-at-least-32-bytes-long!!", "bob-cd34", "Bob", proto.RoleHost, "#4dd0e1")
 	if err != nil {
 		t.Fatalf("MintLiveKitToken: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestMintLiveKitTokenHostGrants(t *testing.T) {
 }
 
 func TestMintLiveKitTokenProjectorGrants(t *testing.T) {
-	jwt, err := MintLiveKitToken("key", "secret-at-least-32-bytes-long!!", "room1", "projector", "Projector", proto.RoleProjector, "#ba68c8")
+	jwt, err := MintLiveKitToken("key", "secret-at-least-32-bytes-long!!", "projector", "Projector", proto.RoleProjector, "#ba68c8")
 	if err != nil {
 		t.Fatalf("MintLiveKitToken: %v", err)
 	}

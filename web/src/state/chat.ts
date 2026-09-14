@@ -61,7 +61,6 @@ export const useChat = create<ChatStore>()((set) => ({
         ...s.messages,
         {
           id: `local-${localSeq++}`,
-          roomId: '',
           from: { identity: 'system', name: 'System', color: '#9a9aa5' },
           text,
           ts,

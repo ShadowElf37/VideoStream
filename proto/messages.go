@@ -1,6 +1,11 @@
 // Package proto is the shared message contract. Keep in sync with messages.ts.
 package proto
 
+// RoomID is the one room. There is no other: the site is a single door into a
+// single LiveKit room, and this is its name everywhere — the LiveKit room,
+// the chat history, the director's state.
+const RoomID = "main"
+
 // Data-channel topics.
 const (
 	TopicChat     = "chat"
@@ -49,12 +54,11 @@ type ChatAuthor struct {
 }
 
 type ChatMessage struct {
-	ID     string     `json:"id"`
-	RoomID string     `json:"roomId"`
-	From   ChatAuthor `json:"from"`
-	Text   string     `json:"text"`
-	TS     int64      `json:"ts"` // unix ms
-	Kind   string     `json:"kind"` // "user" | "system"
+	ID   string     `json:"id"`
+	From ChatAuthor `json:"from"`
+	Text string     `json:"text"`
+	TS   int64      `json:"ts"`   // unix ms
+	Kind string     `json:"kind"` // "user" | "system"
 }
 
 type TypingMessage struct {
@@ -151,32 +155,44 @@ type FsList struct {
 
 // HTTP API shapes.
 
-type CreateRoomRequest struct {
-	Name     string `json:"name,omitempty"`
-	Password string `json:"password,omitempty"`
-}
+// Access is what a visitor already holds: the role their link or their
+// remembered-device cookie grants, or AccessNone when they hold neither — in
+// which case only the room password gets them in (as host).
+const (
+	AccessHost   = "host"
+	AccessViewer = "viewer"
+	AccessNone   = "none"
+)
 
-type CreateRoomResponse struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	InviteLink    string `json:"inviteLink"`
-	HostLink      string `json:"hostLink"`
-	ProjectorLink string `json:"projectorLink"`
-}
-
+// RoomInfo is what an unauthenticated visitor learns from GET /api/room:
+// enough to render the door, no more.
 type RoomInfo struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	HasPassword bool         `json:"hasPassword"`
-	Settings    RoomSettings `json:"settings"`
+	// Access is the best of what the visitor presented: the key in their
+	// link and the cookie on their device ("host" | "viewer" | "none").
+	Access string `json:"access"`
+	// Occupants is how many people (projector excluded) are in the room, so
+	// the door can say "3 people are watching". Zero when the key is invalid.
+	Occupants int `json:"occupants"`
 }
 
+// Links is the link to send to friends. There is no host link: hosts get in
+// with the password, and from then on with the cookie it sets. The viewer
+// key rotates automatically once the room has stood empty for a while, and
+// on demand by a host.
+type Links struct {
+	Viewer string `json:"viewer"`
+}
+
+// TokenRequest asks to join. A visitor needs one of: a viewer key from a
+// link, the room password (grants host), or the remembered-device cookie
+// from an earlier join. The best of what they present wins.
 type TokenRequest struct {
-	Name         string `json:"name"`
-	InviteKey    string `json:"inviteKey,omitempty"`
-	HostSecret   string `json:"hostSecret,omitempty"`
-	ProjectorKey string `json:"projectorKey,omitempty"`
-	Password     string `json:"password,omitempty"`
+	Name     string `json:"name"`
+	Key      string `json:"key,omitempty"`
+	Password string `json:"password,omitempty"`
+	// Projector asks for the projector identity instead of a person's.
+	// Requires host access (the password).
+	Projector bool `json:"projector,omitempty"`
 }
 
 type TokenResponse struct {
@@ -187,6 +203,9 @@ type TokenResponse struct {
 	Color    string       `json:"color"`
 	Session  string       `json:"session"`
 	Settings RoomSettings `json:"settings"`
+	// Links is the current viewer link, so the client can put it in the
+	// address bar and a host can hand it out without another request.
+	Links Links `json:"links"`
 }
 
 type ChatHistoryResponse struct {

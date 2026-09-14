@@ -41,6 +41,23 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 rand_alnum()   { ( set +o pipefail; LC_ALL=C tr -dc 'A-Za-z0-9'    </dev/urandom | head -c "$1" ); }
 rand_urlsafe() { ( set +o pipefail; LC_ALL=C tr -dc 'A-Za-z0-9_-' </dev/urandom | head -c "$1" ); }
 
+# ask_room_password prompts (without echo) for what hosts will type at the
+# door, generating a short one if the user just presses enter. Printed to
+# stdout so callers can capture it; the "generated" notice goes to stderr.
+ask_room_password() {
+	local pw
+	read -r -s -p "    Room password (what hosts type to get in; enter for a generated one): " pw
+	echo >&2
+	if [[ -z "$pw" ]]; then
+		pw="$(rand_urlsafe 12)"
+		echo "    generated room password: ${pw}   (it is in .env; this is the only time it is printed)" >&2
+	fi
+	case "$pw" in
+	*[\ \"\'#]*) die "the room password must not contain spaces, quotes or #: compose's .env parser is not a shell" ;;
+	esac
+	printf '%s' "$pw"
+}
+
 [[ -f docker-compose.yml ]] || die "run this from the deploy/ directory"
 
 # --------------------------------------------------------------------------
@@ -100,6 +117,8 @@ else
 	ASK_IP="${ASK_IP:-$DETECTED_IP}"
 	[[ -n "$ASK_IP" ]] || die "PUBLIC_IP is required"
 
+	ASK_PASSWORD="$(ask_room_password)"
+
 	OLD_UMASK="$(umask)"
 	umask 077 # no world-readable window between creating and chmodding .env
 	cat >.env <<-EOF
@@ -110,6 +129,7 @@ else
 		LIVEKIT_API_KEY=API$(rand_alnum 12)
 		LIVEKIT_API_SECRET=$(rand_urlsafe 32)
 		SESSION_SECRET=$(rand_urlsafe 32)
+		ROOM_PASSWORD=${ASK_PASSWORD}
 	EOF
 	umask "$OLD_UMASK"
 	chmod 600 .env
@@ -125,6 +145,17 @@ set +a
 : "${PUBLIC_IP:?PUBLIC_IP missing from .env}"
 : "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY missing from .env}"
 : "${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET missing from .env}"
+
+# The upgrade path for a .env written before the room had a password: ask for
+# one and append it, rather than failing on a variable the old file never had.
+if [[ -z "${ROOM_PASSWORD:-}" ]]; then
+	log ".env has no ROOM_PASSWORD (it predates the password door)"
+	[[ -t 0 ]] || die "add ROOM_PASSWORD=<what hosts type to get in> to .env"
+	ROOM_PASSWORD="$(ask_room_password)"
+	printf 'ROOM_PASSWORD=%s\n' "$ROOM_PASSWORD" >>.env
+	export ROOM_PASSWORD
+	info "appended ROOM_PASSWORD to .env"
+fi
 
 # --------------------------------------------------------------------------
 # 3. instance firewall (ufw) + TURN hairpin
@@ -298,6 +329,9 @@ cat <<EOF
   LiveKit signalling:            wss://${DOMAIN}  (proxied by Caddy)
   API key:                       ${LIVEKIT_API_KEY}
   (the secret is in ./.env — never paste it anywhere else)
+  Room password:                 in ./.env as ROOM_PASSWORD. Type it at
+                                 https://${DOMAIN} to get in as host; the
+                                 invite link for friends is shown inside.
 
   Still to do, outside this machine:
 

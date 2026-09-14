@@ -1,5 +1,8 @@
 // Shared message contract. Keep in sync with messages.go.
 
+/** The one room. The site is a single door into a single LiveKit room. */
+export const ROOM_ID = 'main';
+
 export const Topics = {
   chat: 'chat',
   typing: 'typing',
@@ -37,7 +40,6 @@ export interface ChatAuthor {
 
 export interface ChatMessage {
   id: string;
-  roomId: string;
   from: ChatAuthor;
   text: string;
   ts: number; // unix ms
@@ -149,32 +151,35 @@ export interface FsList {
 
 // HTTP API shapes
 
-export interface CreateRoomRequest {
-  name?: string;
-  password?: string;
-}
+/**
+ * What a visitor already holds: the role their link or their remembered-device
+ * cookie grants, or 'none' — then only the room password gets them in, as host.
+ */
+export type Access = 'host' | 'viewer' | 'none';
 
-export interface CreateRoomResponse {
-  id: string;
-  name: string;
-  inviteLink: string;
-  hostLink: string;
-  projectorLink: string;
-}
-
+/** GET /api/room: enough to render the door, no more. */
 export interface RoomInfo {
-  id: string;
-  name: string;
-  hasPassword: boolean;
-  settings: RoomSettings;
+  /** The best of the key in the link and the cookie on this device. */
+  access: Access;
+  /** People in the room (projector excluded); 0 when access is 'none'. */
+  occupants: number;
 }
 
+/** The link to send to friends. No host link: hosts get in with the password
+ *  and stay in with the cookie it sets. Rotates once the room has stood empty
+ *  for a while, and on demand by a host. */
+export interface Links {
+  viewer: string;
+}
+
+/** One of: a viewer key from a link, the room password (grants host), or the
+ *  cookie from an earlier join. The best of what is presented wins. */
 export interface TokenRequest {
   name: string;
-  inviteKey?: string;
-  hostSecret?: string;
-  projectorKey?: string;
+  key?: string;
   password?: string;
+  /** Join as the projector; needs host access (the password). */
+  projector?: boolean;
 }
 
 export interface TokenResponse {
@@ -185,6 +190,8 @@ export interface TokenResponse {
   color: string;
   session: string;
   settings: RoomSettings;
+  /** The current viewer link, for the address bar and the Invite dialog. */
+  links: Links;
 }
 
 export interface ChatHistoryResponse {

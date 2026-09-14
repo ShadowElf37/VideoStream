@@ -17,8 +17,10 @@ var ErrInvalidSession = errors.New("invalid session")
 var ErrSessionExpired = errors.New("session expired")
 
 // Session is the payload bound into an opaque, HMAC-signed session token.
+// It proves who a caller is for the six hours after they joined; the
+// long-lived cookie (see remember.go) is a separate thing with a separate
+// signature and cannot be presented as a session.
 type Session struct {
-	RoomID   string `json:"roomId"`
 	Identity string `json:"identity"`
 	Name     string `json:"name"`
 	Color    string `json:"color"`

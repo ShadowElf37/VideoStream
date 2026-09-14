@@ -1,10 +1,10 @@
 import { RoomContext } from '@livekit/components-react';
 import type { Room } from 'livekit-client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { AudioModelContext, useAudioModel } from '@/audio/useAudioModel';
 import { MpvContext, useMpvPlumbing, useMpvStore } from '@/host/useMpv';
-import { api, ApiError } from '@/lib/api';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import type { RoomInfo } from '@/proto/messages';
 import { useChat } from '@/state/chat';
@@ -17,6 +17,7 @@ import { AudioRenderer } from './AudioRenderer';
 import { Banners } from './Banners';
 import { DeviceCheck } from './DeviceCheck';
 import { Dock } from './Dock';
+import { InviteDialog } from './InviteDialog';
 import { JoinCard } from './JoinCard';
 import { SettingsDialog } from './SettingsDialog';
 import { Sidebar, type SidebarMode } from './Sidebar';
@@ -26,50 +27,54 @@ import { useGlobalKeys } from './useKeyboard';
 import { useRoomConnection } from './useRoomConnection';
 import { useRoomEvents } from './useRoomEvents';
 
+/**
+ * The site is one room, and this page is its door and its inside. A visitor
+ * arrives with a key in the URL, a cookie from last time, or nothing; the
+ * door asks for exactly what is missing, and the room view takes over once
+ * a LiveKit Room exists.
+ */
 export function RoomPage() {
-  const { id = '' } = useParams();
   const [params] = useSearchParams();
-  const navigate = useNavigate();
-  const inviteKey = params.get('k') ?? undefined;
-  const hostSecret = params.get('h') ?? undefined;
+  const key = params.get('k') ?? undefined;
   const [info, setInfo] = useState<RoomInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [step, setStep] = useState<'who' | 'devices'>('who');
   const [who, setWho] = useState<{ name: string; password: string } | null>(null);
   const [joining, setJoining] = useState(false);
   const phase = useSession((s) => s.phase);
-  const conn = useRoomConnection(id);
+  const linkExpired = useSession((s) => s.linkExpired);
+  const conn = useRoomConnection();
 
   useEffect(() => {
-    useSession.getState().setCredentials({ inviteKey, hostSecret });
-  }, [inviteKey, hostSecret]);
+    useSession.getState().setCredentials({ key });
+  }, [key]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setInfo(null);
+  // What does the visitor already hold? Asked on arrival, and again whenever
+  // we land back at the door (the cookie may now say more than the URL).
+  const askDoor = useCallback(() => {
     setLoadError(null);
     api
-      .getRoom(id)
+      .getRoom(key)
       .then((r) => {
-        if (cancelled) return;
         setInfo(r);
-        useSession.getState().setRoom(id, r);
+        useSession.getState().setAccess(r.access);
       })
-      .catch((e) => {
-        if (cancelled) return;
-        setLoadError(e instanceof ApiError && e.status === 404 ? 'This room does not exist (or has expired).' : e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+      .catch((e) => setLoadError(e instanceof Error ? e.message : String(e)));
+  }, [key]);
+  useEffect(() => {
+    setInfo(null);
+    askDoor();
+  }, [askDoor]);
+  useEffect(() => {
+    if (linkExpired) {
+      setStep('who');
+      askDoor();
+    }
+  }, [linkExpired, askDoor]);
 
   useEffect(() => {
-    document.title = info ? `${info.name || 'Room'} · VideoStream` : 'VideoStream';
-    return () => {
-      document.title = 'VideoStream';
-    };
-  }, [info]);
+    document.title = 'VideoStream';
+  }, []);
 
   const join = async () => {
     if (!who) return;
@@ -91,7 +96,8 @@ export function RoomPage() {
   const leave = async () => {
     await conn.leave();
     useMpvStore.getState().reset();
-    navigate('/');
+    setStep('who');
+    askDoor();
   };
 
   // Once a Room exists we stay in the room view; reconnects swap the Room underneath.
@@ -100,10 +106,10 @@ export function RoomPage() {
   if (loadError) {
     return (
       <Shell>
-        <h1 className="text-lg font-semibold">Can't open this room</h1>
+        <h1 className="text-lg font-semibold">Can't reach the room</h1>
         <p className="text-muted text-sm mt-1">{loadError}</p>
-        <Button className="mt-5" onClick={() => navigate('/')}>
-          Back to start
+        <Button className="mt-5" onClick={askDoor}>
+          Try again
         </Button>
       </Shell>
     );
@@ -112,20 +118,23 @@ export function RoomPage() {
     return (
       <Shell>
         <div className="flex items-center gap-3 text-muted">
-          <Spinner size={20} /> Loading room…
+          <Spinner size={20} /> One moment…
         </div>
       </Shell>
     );
   }
   if (!inRoom) {
     const failed = phase === 'failed';
+    const error = useSession.getState().error;
     return (
-      <Shell title={info.name || 'Watch party'} subtitle={step === 'who' ? 'Who are you?' : 'Quick sound check'}>
-        {failed && <div className="mb-4 rounded-xl bg-danger/10 border border-danger/30 text-danger text-[13px] px-3 py-2">{useSession.getState().error}</div>}
+      <Shell title="Movie night" subtitle={step === 'who' ? 'Who are you?' : 'Quick sound check'}>
+        {failed && !linkExpired && <div className="mb-4 rounded-xl bg-danger/10 border border-danger/30 text-danger text-[13px] px-3 py-2">{error}</div>}
         {step === 'who' ? (
           <JoinCard
-            room={info}
-            isHost={!!hostSecret}
+            access={info.access}
+            hadKey={!!key}
+            occupants={info.occupants}
+            notice={linkExpired ? 'You were disconnected and the invite link has changed in the meantime.' : null}
             onNext={(name, password) => {
               setWho({ name, password });
               setStep('devices');
@@ -145,9 +154,9 @@ function Shell({ title, subtitle, children }: { title?: string; subtitle?: strin
   return (
     <div className="min-h-full flex items-center justify-center p-6 bg-[radial-gradient(ellipse_at_top,rgba(245,185,66,0.08),transparent_60%)]">
       <div className="anim-pop w-full max-w-md glass-strong rounded-2xl p-6">
-        <Link to="/" className="inline-flex items-center gap-2 text-muted hover:text-text text-xs mb-4">
+        <div className="inline-flex items-center gap-2 text-muted text-xs mb-4">
           <Logo size={20} /> VideoStream
-        </Link>
+        </div>
         {title && <h1 className="text-xl font-semibold tracking-tight">{title}</h1>}
         {subtitle && <p className="text-muted text-sm mt-0.5 mb-5">{subtitle}</p>}
         {children}
@@ -167,6 +176,8 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
   const sidebarOpen = usePrefs((s) => s.sidebarOpen);
   const setPref = usePrefs((s) => s.set);
   const unread = useChat((s) => s.unread);
+  const inviteOpen = useSession((s) => s.inviteOpen);
+  const setInviteOpen = useSession((s) => s.setInviteOpen);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [reactionsOpen, setReactionsOpen] = useState(false);
   const dockHide = useAutoHide(2500, fs.active);
@@ -175,8 +186,8 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
 
   const stacked = narrow && !fs.active;
   const mode: SidebarMode = fs.active ? 'drawer' : stacked ? 'stacked' : 'inline';
-  const openQueue = useCallback(() => {
-    setPref('sidebarTab', 'queue');
+  const openLibrary = useCallback(() => {
+    setPref('sidebarTab', 'library');
     setPref('sidebarOpen', true);
   }, [setPref]);
 
@@ -195,7 +206,7 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
     }),
     [dispatch, fs, setPref],
   );
-  useGlobalKeys(keys, !settingsOpen);
+  useGlobalKeys(keys, !settingsOpen && !inviteOpen);
 
   const pip = async () => {
     const v = videoRef.current;
@@ -218,7 +229,7 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
             <Banners room={room} onReconnect={onReconnect} onLeave={onLeave} />
             <div className={cn('flex-1 min-h-0 flex', stacked && 'flex-col')}>
               <main className={cn('min-w-0 min-h-0 relative', stacked && sidebarOpen ? 'aspect-video flex-none w-full' : 'flex-1')}>
-                <Stage onOpenQueue={openQueue} onToggleFullscreen={() => void fs.toggle()} videoRef={videoRef} />
+                <Stage onOpenLibrary={openLibrary} onToggleFullscreen={() => void fs.toggle()} videoRef={videoRef} />
               </main>
               <Sidebar open={sidebarOpen} mode={mode} onClose={() => setPref('sidebarOpen', false)} />
             </div>
@@ -229,6 +240,7 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
               isFullscreen={fs.active}
               onToggleFullscreen={() => void fs.toggle()}
               onOpenSettings={() => setSettingsOpen(true)}
+              onOpenInvite={() => setInviteOpen(true)}
               onLeave={onLeave}
               onPiP={pip}
               reactionsOpen={reactionsOpen}
@@ -236,6 +248,7 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
               unread={unread}
             />
             <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} room={room} />
+            <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} />
           </div>
         </MpvContext.Provider>
       </AudioModelContext.Provider>

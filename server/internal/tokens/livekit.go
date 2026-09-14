@@ -22,8 +22,8 @@ func TokenValidity() time.Duration { return tokenValidity }
 func boolPtr(b bool) *bool { return &b }
 
 // MintLiveKitToken builds a signed LiveKit access token for a participant
-// joining roomID with the given identity, display name, role and color.
-func MintLiveKitToken(apiKey, apiSecret, roomID, identity, name, role, color string) (string, error) {
+// joining the room with the given identity, display name, role and color.
+func MintLiveKitToken(apiKey, apiSecret, identity, name, role, color string) (string, error) {
 	metadata, err := json.Marshal(proto.ParticipantMetadata{Role: role, Color: color})
 	if err != nil {
 		return "", fmt.Errorf("marshal participant metadata: %w", err)
@@ -31,7 +31,7 @@ func MintLiveKitToken(apiKey, apiSecret, roomID, identity, name, role, color str
 
 	grant := &auth.VideoGrant{
 		RoomJoin:       true,
-		Room:           roomID,
+		Room:           proto.RoomID,
 		CanPublish:     boolPtr(true),
 		CanSubscribe:   boolPtr(role != proto.RoleProjector),
 		CanPublishData: boolPtr(true),
@@ -56,9 +56,9 @@ func MintLiveKitToken(apiKey, apiSecret, roomID, identity, name, role, color str
 // EnsureRoom makes sure the LiveKit room exists before a participant tries
 // to join it. Production LiveKit deployments run with auto_create off.
 // Errors are the caller's to log; they are not fatal to token issuance.
-func EnsureRoom(ctx context.Context, client *lksdk.RoomServiceClient, roomID string) error {
+func EnsureRoom(ctx context.Context, client *lksdk.RoomServiceClient) error {
 	_, err := client.CreateRoom(ctx, &livekit.CreateRoomRequest{
-		Name:            roomID,
+		Name:            proto.RoomID,
 		EmptyTimeout:    300,
 		MaxParticipants: 16,
 	})

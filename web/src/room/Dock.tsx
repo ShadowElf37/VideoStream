@@ -14,6 +14,7 @@ import {
   PictureInPicture2,
   Settings,
   Sticker,
+  UserPlus,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -38,6 +39,7 @@ export interface DockProps {
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   onOpenSettings: () => void;
+  onOpenInvite: () => void;
   onLeave: () => void;
   onPiP?: () => void;
   reactionsOpen: boolean;
@@ -177,6 +179,9 @@ export function Dock(p: DockProps) {
       </DockButton>
       <DockButton label={p.sidebarOpen ? 'Hide sidebar' : 'Show sidebar'} kbd="C" caption="Sidebar" onClick={p.onToggleSidebar} badge={p.sidebarOpen ? 0 : p.unread}>
         {p.sidebarOpen ? <PanelRightClose /> : <PanelRight />}
+      </DockButton>
+      <DockButton label="Invite friends (the link is in here)" caption="Invite" onClick={p.onOpenInvite}>
+        <UserPlus />
       </DockButton>
       <DockButton label="Settings" caption="Settings" onClick={p.onOpenSettings}>
         <Settings />

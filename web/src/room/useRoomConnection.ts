@@ -8,6 +8,7 @@ import { useSession } from '@/state/session';
 
 export interface JoinOptions {
   name: string;
+  /** Only on the first connect; afterwards the cookie vouches for us. */
   password?: string;
   micDeviceId?: string;
   joinMuted: boolean;
@@ -39,12 +40,22 @@ const FINAL_REASONS = new Set<DisconnectReason>([
   DisconnectReason.ROOM_DELETED,
 ]);
 
+/** The key in a viewer link, or undefined. */
+export function keyFromLink(link: string | undefined): string | undefined {
+  if (!link) return undefined;
+  try {
+    return new URL(link).searchParams.get('k') ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Token fetch + LiveKit connect lifecycle. Every (re)connect fetches a fresh
  * token and creates a fresh Room; the previous Room is only torn down once the
  * new one exists so the room view never unmounts during a reconnect.
  */
-export function useRoomConnection(roomId: string) {
+export function useRoomConnection() {
   const [room, setRoom] = useState<Room | null>(null);
   const [connected, setConnected] = useState(false);
   const roomRef = useRef<Room | null>(null);
@@ -71,19 +82,42 @@ export function useRoomConnection(roomId: string) {
 
       let token;
       try {
-        token = await api.getToken(roomId, {
+        token = await api.getToken({
           name: opts.name,
-          inviteKey: s.credentials.inviteKey,
-          hostSecret: s.credentials.hostSecret,
-          password: opts.password,
+          key: s.credentials.key,
+          password: opts.password || undefined,
         });
       } catch (e) {
-        const msg = e instanceof ApiError ? (e.isAuth ? 'Wrong password or link.' : e.message) : String(e);
+        const auth = e instanceof ApiError && e.isAuth;
+        const msg = e instanceof ApiError ? (auth ? e.message : e.message) : String(e);
+        if (auth && roomRef.current) {
+          // A reconnect the door refused: our link rotated while we were
+          // away and this device is not remembered. Back to the door, with
+          // the reason, rather than a reconnect button that can never work.
+          const old = roomRef.current;
+          roomRef.current = null;
+          setRoom(null);
+          setConnected(false);
+          dispose(old);
+          s.setLinkExpired(true);
+        }
         s.setPhase(roomRef.current ? 'disconnected' : 'failed', msg);
         throw e;
       }
       s.setToken(token);
       s.setName(opts.name);
+      s.setLinkExpired(false);
+      // From here on the cookie vouches for us; keep the current key too, and
+      // drop the password from memory.
+      const key = keyFromLink(token.links.viewer);
+      s.setCredentials({ key });
+      // The address bar becomes the invite link: a refresh keeps working, and
+      // "copy the URL" is a way to invite someone.
+      if (key && typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        url.search = `?k=${encodeURIComponent(key)}`;
+        window.history.replaceState(window.history.state, '', url);
+      }
       useChat.getState().setSelf(token.identity);
 
       const old = roomRef.current;
@@ -144,7 +178,7 @@ export function useRoomConnection(roomId: string) {
       session.getState().setPhase('connected');
       setConnected(true);
     },
-    [roomId, session, dispose],
+    [session, dispose],
   );
 
   /** Re-fetch a token and connect again (used from the reconnect card). */

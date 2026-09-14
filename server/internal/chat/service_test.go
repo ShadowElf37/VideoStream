@@ -16,7 +16,7 @@ type recordingBroadcaster struct {
 	calls []string // topics
 }
 
-func (b *recordingBroadcaster) Broadcast(_ context.Context, _, topic string, _ []byte) error {
+func (b *recordingBroadcaster) Broadcast(_ context.Context, topic string, _ []byte) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, topic)
@@ -44,14 +44,14 @@ func TestPostMessageValidation(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.PostMessage(ctx, "room1", "id", "Name", "#fff", "   "); err != ErrEmptyText {
+	if _, err := svc.PostMessage(ctx, "id", "Name", "#fff", "   "); err != ErrEmptyText {
 		t.Errorf("empty text: err = %v", err)
 	}
 	long := make([]byte, 2001)
 	for i := range long {
 		long[i] = 'a'
 	}
-	if _, err := svc.PostMessage(ctx, "room1", "id", "Name", "#fff", string(long)); err != ErrTextTooLong {
+	if _, err := svc.PostMessage(ctx, "id", "Name", "#fff", string(long)); err != ErrTextTooLong {
 		t.Errorf("too long: err = %v", err)
 	}
 }
@@ -60,7 +60,7 @@ func TestPostMessageStoresAndBroadcasts(t *testing.T) {
 	svc, b, _ := newTestService(t)
 	ctx := context.Background()
 
-	msg, err := svc.PostMessage(ctx, "room1", "alice-ab12", "Alice", "#e57373", "hi there")
+	msg, err := svc.PostMessage(ctx, "alice-ab12", "Alice", "#e57373", "hi there")
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestPostMessageStoresAndBroadcasts(t *testing.T) {
 		t.Errorf("expected 1 broadcast, got %d", b.count())
 	}
 
-	history, err := svc.History(ctx, "room1", 0, 100)
+	history, err := svc.History(ctx, 0, 100)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -84,10 +84,10 @@ func TestSystemMessage(t *testing.T) {
 	svc, b, _ := newTestService(t)
 	ctx := context.Background()
 
-	if err := svc.System(ctx, "room1", "Host changed room settings: anyone can pause = on"); err != nil {
+	if err := svc.System(ctx, "Host changed room settings: anyone can pause = on"); err != nil {
 		t.Fatalf("System: %v", err)
 	}
-	history, err := svc.History(ctx, "room1", 0, 100)
+	history, err := svc.History(ctx, 0, 100)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -104,11 +104,11 @@ func TestRateLimiting(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
-		if _, err := svc.PostMessage(ctx, "room1", "id", "Name", "#fff", "msg"); err != nil {
+		if _, err := svc.PostMessage(ctx, "id", "Name", "#fff", "msg"); err != nil {
 			t.Fatalf("message %d: %v", i, err)
 		}
 	}
-	if _, err := svc.PostMessage(ctx, "room1", "id", "Name", "#fff", "one too many"); err != ErrRateLimited {
+	if _, err := svc.PostMessage(ctx, "id", "Name", "#fff", "one too many"); err != ErrRateLimited {
 		t.Errorf("6th message: err = %v, want ErrRateLimited", err)
 	}
 }
@@ -116,7 +116,7 @@ func TestRateLimiting(t *testing.T) {
 func TestBroadcastSettings(t *testing.T) {
 	svc, b, _ := newTestService(t)
 	settings := proto.RoomSettings{AnyoneCanPause: true, MaxPreset: proto.Preset720p}
-	if err := svc.BroadcastSettings(context.Background(), "room1", settings); err != nil {
+	if err := svc.BroadcastSettings(context.Background(), settings); err != nil {
 		t.Fatalf("BroadcastSettings: %v", err)
 	}
 	if b.count() != 1 || b.calls[0] != proto.TopicSettings {

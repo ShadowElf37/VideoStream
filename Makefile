@@ -30,7 +30,7 @@ AID ?= 0
 SID ?= 0
 push: vspush
 	@test -n "$(FILE)" || { echo "usage: make push FILE=<video> [AID=2] [SID=1] [HOST=user@host]"; exit 2; }
-	@test -n "$(HOST)" || { echo "set HOST=user@host (the server running the house projector)"; exit 2; }
+	@test -n "$(HOST)" || { echo "set HOST=user@host (the server)"; exit 2; }
 	./projector/bin/vspush --aid $(AID) --sid $(SID) --dest "$(HOST):$(PUSH_DIR)/" "$(FILE)"
 
 ## projector: cgo binary linked against system libmpv + libopus
@@ -48,7 +48,7 @@ dev-livekit:
 	livekit-server --config deploy/dev/livekit-dev.yaml
 
 dev-server:
-	cd server && LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret PUBLIC_URL=http://localhost:5173 LIVEKIT_URL=ws://localhost:7880 go run ./cmd/server
+	cd server && ROOM_PASSWORD=dev LIVEKIT_API_KEY=devkey LIVEKIT_API_SECRET=secret PUBLIC_URL=http://localhost:5173 LIVEKIT_URL=ws://localhost:7880 go run ./cmd/server
 
 dev-web:
 	cd web && npm run dev

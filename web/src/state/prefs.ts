@@ -3,7 +3,7 @@ import { persist } from 'zustand/middleware';
 
 export type Theme = 'dark' | 'light';
 export type DuckDb = 0 | -6 | -12;
-export type SidebarTab = 'chat' | 'people' | 'queue';
+export type SidebarTab = 'chat' | 'people' | 'library';
 
 export interface Prefs {
   name: string;
@@ -26,6 +26,9 @@ export interface Prefs {
   sidebarOpen: boolean;
   sidebarWidth: number;
   sidebarTab: SidebarTab;
+  /** Host-local: the desktop projector's panel is shown and the stage
+   *  expects the live track. Off, the app is the server library, Plex-style. */
+  projectorMode: boolean;
 }
 
 interface PrefsStore extends Prefs {
@@ -59,6 +62,7 @@ export const DEFAULT_PREFS: Prefs = {
   sidebarOpen: true,
   sidebarWidth: 340,
   sidebarTab: 'chat',
+  projectorMode: false,
 };
 
 export const usePrefs = create<PrefsStore>()(
@@ -72,7 +76,13 @@ export const usePrefs = create<PrefsStore>()(
     }),
     {
       name: 'vs.prefs',
-      version: 1,
+      version: 2,
+      migrate: (persisted, version) => {
+        const s = persisted as Record<string, unknown>;
+        // v1 called the library tab "queue".
+        if (version < 2 && s.sidebarTab === 'queue') s.sidebarTab = 'library';
+        return s as unknown as Prefs;
+      },
       partialize: (s) => {
         const { set: _s, patch: _p, setVoiceVolume: _v, ...rest } = s;
         return rest;

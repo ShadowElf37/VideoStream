@@ -1,4 +1,4 @@
-import { ListVideo, MessageSquare, Users, X } from 'lucide-react';
+import { Library, MessageSquare, Users, X } from 'lucide-react';
 import { useCallback, useEffect, useRef } from 'react';
 import { cn } from '@/lib/cn';
 import { clamp } from '@/lib/format';
@@ -7,7 +7,7 @@ import { usePrefs, type SidebarTab } from '@/state/prefs';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/Tabs';
 import { ChatTab } from './ChatTab';
 import { PeopleTab } from './PeopleTab';
-import { QueueTab } from './QueueTab';
+import { LibraryTab } from './LibraryTab';
 
 /** inline: desktop column · drawer: overlay in fullscreen · stacked: bottom sheet under the stage on narrow screens */
 export type SidebarMode = 'inline' | 'drawer' | 'stacked';
@@ -55,8 +55,8 @@ export function Sidebar({ open, mode, onClose }: { open: boolean; mode: SidebarM
           <TabsTrigger value="people">
             <Users className="size-4" /> People
           </TabsTrigger>
-          <TabsTrigger value="queue">
-            <ListVideo className="size-4" /> Queue
+          <TabsTrigger value="library">
+            <Library className="size-4" /> Library
           </TabsTrigger>
         </TabsList>
         {mode !== 'inline' && (
@@ -71,8 +71,8 @@ export function Sidebar({ open, mode, onClose }: { open: boolean; mode: SidebarM
       <TabsContent value="people" className="flex-1 min-h-0 overflow-y-auto outline-none data-[state=inactive]:hidden">
         <PeopleTab />
       </TabsContent>
-      <TabsContent value="queue" className="flex-1 min-h-0 outline-none data-[state=inactive]:hidden">
-        <QueueTab active={open && tab === 'queue'} />
+      <TabsContent value="library" className="flex-1 min-h-0 outline-none data-[state=inactive]:hidden">
+        <LibraryTab active={open && tab === 'library'} />
       </TabsContent>
     </Tabs>
   );

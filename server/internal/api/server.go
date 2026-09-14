@@ -5,12 +5,14 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"github.com/ShadowElf37/VideoStream/server/internal/chat"
 	"github.com/ShadowElf37/VideoStream/server/internal/config"
 	"github.com/ShadowElf37/VideoStream/server/internal/media"
+	"github.com/ShadowElf37/VideoStream/server/internal/occupancy"
 	"github.com/ShadowElf37/VideoStream/server/internal/playback"
 	"github.com/ShadowElf37/VideoStream/server/internal/rooms"
 )
@@ -24,6 +26,10 @@ type Server struct {
 	logger   *slog.Logger
 	library  *media.Library
 	director *playback.Director
+	watcher  *occupancy.Watcher
+	// pwLimiter throttles password attempts per client address, so the one
+	// secret that guards the room cannot be guessed at line rate.
+	pwLimiter *chat.Limiter
 }
 
 // NewServer wires up a Server with its dependencies.
@@ -32,6 +38,8 @@ func NewServer(cfg *config.Config, roomsSvc *rooms.Service, chatSvc *chat.Servic
 		logger = slog.Default()
 	}
 	s := &Server{cfg: cfg, rooms: roomsSvc, chat: chatSvc, lkClient: lkClient, logger: logger}
+	s.pwLimiter = chat.NewLimiter(5, 30*time.Second)
+	s.watcher = occupancy.New(lkClient, cfg.LinksRotateAfter, s.onRoomEmpty, logger)
 	if cfg.MediaRoot != "" {
 		s.library = media.New(cfg.MediaRoot)
 		s.director = playback.New(chat.NewLiveKitBroadcaster(lkClient), &mediaResolver{cfg: cfg, lib: s.library})
@@ -39,12 +47,27 @@ func NewServer(cfg *config.Config, roomsSvc *rooms.Service, chatSvc *chat.Servic
 	return s
 }
 
-// StartDirector runs the playback loop, which advances playlists when a title
-// ends and re-broadcasts periodically so late joiners converge without asking.
-// A no-op when there is no media library.
-func (s *Server) StartDirector(ctx context.Context) {
+// Start runs the background loops: the director (advancing playlists and
+// re-broadcasting for late joiners) and the occupancy watcher (rotating the
+// invite link once everyone has left). Both live as long as ctx.
+func (s *Server) Start(ctx context.Context) {
 	if s.director != nil {
 		go s.director.Run(ctx)
+	}
+	go s.watcher.Run(ctx)
+}
+
+// onRoomEmpty is what the watcher does once the room has stood empty for the
+// configured grace: the invite link stops working, and the chat says so for
+// whoever comes back.
+func (s *Server) onRoomEmpty(ctx context.Context) {
+	if _, err := s.rooms.Rotate(ctx); err != nil {
+		s.logger.Error("rotate invite link after the room emptied", "err", err)
+		return
+	}
+	s.logger.Info("room empty; invite link rotated")
+	if err := s.chat.System(ctx, "Everyone left; the invite link has been refreshed."); err != nil {
+		s.logger.Warn("post rotation system line", "err", err)
 	}
 }
 
@@ -55,24 +78,29 @@ func (s *Server) Routes(spa http.Handler) http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 
-	mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
-	mux.HandleFunc("GET /api/rooms/{id}", s.handleGetRoom)
-	mux.HandleFunc("POST /api/rooms/{id}/token", s.handleToken)
-	mux.HandleFunc("GET /api/rooms/{id}/chat", s.requireSession(s.handleGetChat))
-	mux.HandleFunc("POST /api/rooms/{id}/chat", s.requireSession(s.handlePostChat))
-	mux.HandleFunc("PATCH /api/rooms/{id}/settings", s.requireSession(s.handlePatchSettings))
+	// The door.
+	mux.HandleFunc("GET /api/room", s.handleGetRoom)
+	mux.HandleFunc("POST /api/room/token", s.handleToken)
+	mux.HandleFunc("POST /api/room/logout", s.handleLogout)
+
+	// Inside.
+	mux.HandleFunc("GET /api/room/links", s.requireSession(s.handleGetLinks))
+	mux.HandleFunc("POST /api/room/links/rotate", s.requireSession(s.handleRotateLinks))
+	mux.HandleFunc("GET /api/room/chat", s.requireSession(s.handleGetChat))
+	mux.HandleFunc("POST /api/room/chat", s.requireSession(s.handlePostChat))
+	mux.HandleFunc("PATCH /api/room/settings", s.requireSession(s.handlePatchSettings))
 
 	// The pushed media library. Listing is session-gated; the bytes are
 	// behind a signed URL, because a <video src> sends no headers.
-	mux.HandleFunc("GET /api/media", s.requireAnySession(s.handleListMedia))
-	mux.HandleFunc("DELETE /api/media/{id}", s.requireAnySession(s.handleDeleteMedia))
+	mux.HandleFunc("GET /api/media", s.requireSession(s.handleListMedia))
+	mux.HandleFunc("DELETE /api/media/{id}", s.requireSession(s.handleDeleteMedia))
 	mux.HandleFunc("GET /media/{id}/{file}", s.handleMediaFile)
 	mux.HandleFunc("GET /api/time", s.handleServerTime)
 
 	// The transport. Host-gated by session, so there is no participant to
 	// identify and no roster race to lose.
-	mux.HandleFunc("GET /api/rooms/{id}/playback", s.requireSession(s.handleGetPlayback))
-	mux.HandleFunc("POST /api/rooms/{id}/playback", s.requireSession(s.handlePlaybackCommand))
+	mux.HandleFunc("GET /api/room/playback", s.requireSession(s.handleGetPlayback))
+	mux.HandleFunc("POST /api/room/playback", s.requireSession(s.handlePlaybackCommand))
 
 	if spa != nil {
 		mux.Handle("/", spa)

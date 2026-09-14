@@ -1,5 +1,6 @@
-// Command server runs the VideoStream app server: room/token/chat/settings
-// HTTP API plus the embedded SPA, backed by SQLite and LiveKit.
+// Command server runs the VideoStream app server: the door (password, links,
+// cookies), tokens, chat, settings and the playback director, plus the
+// embedded SPA, backed by SQLite and LiveKit.
 package main
 
 import (
@@ -50,13 +51,13 @@ func run(logger *slog.Logger) error {
 	roomsSvc := rooms.NewService(st, cfg)
 	chatSvc := chat.NewService(st, broadcaster)
 
-	// The director's loop lives as long as the process, so it shares the
+	// The background loops live as long as the process, so they share the
 	// signal context that shuts everything else down.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	srv := api.NewServer(cfg, roomsSvc, chatSvc, lkClient, logger)
-	srv.StartDirector(ctx)
+	srv.Start(ctx)
 	handler := srv.Routes(web.Handler())
 
 	httpServer := &http.Server{

@@ -25,7 +25,6 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
   const role = useSession((s) => s.role);
   const settings = useSession((s) => s.settings);
   const token = useSession((s) => s.token);
-  const roomId = useSession((s) => s.roomId);
   const [devices, setDevices] = useState<DeviceLists>({ mics: [], speakers: [] });
   const [toneBusy, setToneBusy] = useState(false);
 
@@ -77,7 +76,7 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
   const patchRoom = async (patch: Partial<RoomSettings>) => {
     if (!token) return;
     try {
-      const next = await api.patchSettings(roomId, token.session, patch);
+      const next = await api.patchSettings(token.session, patch);
       useSession.getState().setSettings(next);
     } catch (e) {
       useSession.getState().toast('Could not update room settings', 'error');

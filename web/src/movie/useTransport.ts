@@ -23,7 +23,6 @@ export interface Transport {
 
 export function useTransport(hosted: boolean): Transport {
   const mpv = useMpv();
-  const roomId = useSession((s) => s.roomId);
 
   return useMemo<Transport>(() => {
     const session = () => useSession.getState().token?.session ?? '';
@@ -50,9 +49,9 @@ export function useTransport(hosted: boolean): Transport {
       };
     }
 
-    const send = async (body: Parameters<typeof api.playback>[2]) => {
+    const send = async (body: Parameters<typeof api.playback>[1]) => {
       try {
-        await api.playback(roomId, session(), body);
+        await api.playback(session(), body);
       } catch (e) {
         toast(e);
       }
@@ -64,5 +63,5 @@ export function useTransport(hosted: boolean): Transport {
       seek: (ms, relative) => send({ action: 'seek', posMs: Math.round(ms), relative }),
       load: (mediaId, mode) => send({ action: mode === 'append' ? 'enqueue' : 'load', mediaId }),
     };
-  }, [hosted, mpv, roomId]);
+  }, [hosted, mpv]);
 }

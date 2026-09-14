@@ -1,10 +1,14 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Link, Route, Routes } from 'react-router';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router';
 import { RoomPage } from '@/room/RoomPage';
 import { applyTheme, usePrefs } from '@/state/prefs';
 import { TooltipProvider } from '@/ui/Tooltip';
-import { Landing } from './Landing';
 
+/**
+ * One room, one page. The site root *is* the door: a viewer or host link is
+ * just `/` with a key in the query, and anything else lands there too (old
+ * `/r/<id>` links included, which now simply meet the password prompt).
+ */
 export function App() {
   const theme = usePrefs((s) => s.theme);
   useEffect(() => applyTheme(theme), [theme]);
@@ -12,26 +16,10 @@ export function App() {
     <TooltipProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/r/:id" element={<RoomPage />} />
-          <Route path="*" element={<NotFound />} />
+          <Route path="/" element={<RoomPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </TooltipProvider>
-  );
-}
-
-function NotFound() {
-  return (
-    <div className="min-h-full flex items-center justify-center p-6">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold">Nothing here</h1>
-        <p className="text-muted mt-1">
-          <Link to="/" className="text-accent underline">
-            Back to the start
-          </Link>
-        </p>
-      </div>
-    </div>
   );
 }

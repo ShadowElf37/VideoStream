@@ -10,26 +10,57 @@ A LiveKit JWT carries JSON `metadata`: `{"role":"host"|"viewer"|"projector","col
 Roles are assigned by the app server when it mints the token; clients never
 choose their role. The projector accepts `mpv.cmd` only from `role=host`.
 
-## Links
+## The room
 
-- Invite:    `https://<host>/r/<roomId>?k=<inviteKey>`
-- Host:      `https://<host>/r/<roomId>?h=<hostSecret>`
-- Projector: `https://<host>/r/<roomId>?p=<projectorKey>` (passed to `projector --room`)
+There is exactly one room; `proto.RoomID` / `ROOM_ID` (`"main"`) names it in
+LiveKit, in the chat history and in the director. Nobody creates or names
+rooms. The site is a door, and there are three ways through it:
+
+| Way in | Who | What you get |
+|---|---|---|
+| `https://<host>/?k=<viewerKey>` | friends | viewer |
+| the room password (`ROOM_PASSWORD` on the server) | whoever runs the party | host |
+| the `vs_auth` cookie | anyone who got in before, on that device | whatever they had |
+
+The password is the only thing that has to be *known*. Joining sets a
+long-lived, HttpOnly, signed cookie carrying the role, so a host enters the
+password once per device and a friend who has been in before keeps getting
+in after the link rotates. The cookie only ever upgrades (viewer → host),
+and `POST /api/room/logout` clears it.
+
+The viewer key is rotated automatically once the room has stood empty for
+`LINKS_ROTATE_AFTER` (default 2 minutes; `0` disables it), and on demand by
+a host. A rotated key gets `access: "none"` from `GET /api/room` (unless the
+cookie says otherwise), and the door asks for the password instead.
+
+The projector joins with the password (`projector --room https://<host>
+--password …`, or `VS_PASSWORD` in the environment) and asks for the
+projector identity with `projector: true`.
 
 ## HTTP API (app server)
 
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/api/rooms` | `{name?, password?}` → `{id, name, inviteLink, hostLink, projectorLink}` |
-| GET | `/api/rooms/{id}` | → `{id, name, hasPassword, settings}` |
-| POST | `/api/rooms/{id}/token` | `{name, inviteKey?, hostSecret?, projectorKey?, password?}` → `{token, url, identity, role, color, session, settings}` |
-| GET | `/api/rooms/{id}/chat?before=<unixms>&limit=100` | → `{messages: ChatMessage[]}` (Bearer `session`) |
-| POST | `/api/rooms/{id}/chat` | `{text}` → `ChatMessage` (Bearer `session`; server stores and broadcasts on topic `chat`) |
-| PATCH | `/api/rooms/{id}/settings` | partial `RoomSettings` → `RoomSettings` (Bearer `session`, host only; server broadcasts on topic `settings`) |
+| GET | `/api/room?key=<viewerKey>` | → `RoomInfo` `{access, occupants}` (unauthenticated; the door; reads the cookie too) |
+| POST | `/api/room/token` | `TokenRequest` `{name, key?, password?, projector?}` → `TokenResponse` `{token, url, identity, role, color, session, settings, links}`; sets the `vs_auth` cookie |
+| POST | `/api/room/logout` | clears the cookie → 204 |
+| GET | `/api/room/links` | → `Links` (Bearer `session`) |
+| POST | `/api/room/links/rotate` | → `Links` (Bearer `session`, host only; posts a system chat line) |
+| GET | `/api/room/chat?before=<unixms>&limit=100` | → `{messages: ChatMessage[]}` (Bearer `session`) |
+| POST | `/api/room/chat` | `{text}` → `ChatMessage` (Bearer `session`; stored and broadcast on topic `chat`) |
+| PATCH | `/api/room/settings` | partial `RoomSettings` → `RoomSettings` (Bearer `session`, host only; broadcast on topic `settings`) |
+| GET | `/api/room/playback` | → `PlaybackState` (Bearer `session`) |
+| POST | `/api/room/playback` | `{action, mediaId?, posMs?, relative?}` → `PlaybackState` (Bearer `session`; host, or anyone for pause-ish actions when `anyoneCanPause`) |
+| GET | `/api/media` | → `{items: (MediaMeta & {url})[], freeBytes}` (Bearer `session`) |
+| DELETE | `/api/media/{id}` | (Bearer `session`, host only) |
+| GET | `/media/{id}/{file}?e=&s=` | the bytes, behind a signed URL (Range supported) |
+| GET | `/api/time` | → `{nowMs}` |
 | GET | `/healthz` | → `ok` |
 
-`session` is an HMAC-signed opaque string binding `{roomId, identity, name, color, role, exp}`.
-`url` is the LiveKit websocket URL (`wss://<host>` when proxied by Caddy).
+`session` is an HMAC-signed opaque string binding `{identity, name, color, role, exp}`,
+valid for six hours; the cookie is a separate signature over `{role}` and cannot
+be used as a session. `url` is the LiveKit websocket URL (`wss://<host>` when
+proxied by Caddy). Wrong passwords are rate-limited per client address.
 
 ## LiveKit data topics
 
