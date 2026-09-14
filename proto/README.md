@@ -55,6 +55,8 @@ projector identity with `projector: true`.
 | GET | `/api/media` | → `{items: (MediaMeta & {url})[], freeBytes}` (Bearer `session`) |
 | DELETE | `/api/media/{id}` | (Bearer `session`, host only) |
 | GET | `/media/{id}/{file}?e=&s=` | the bytes, behind a signed URL (Range supported) |
+| GET | `/media/{id}/index.m3u8?e=&s=` | HLS master playlist, one variant per rendition (generated) |
+| GET | `/media/{id}/{rendition}.m3u8?e=&s=` | that rendition as `EXT-X-BYTERANGE` ranges over its MP4 (generated) |
 | GET | `/api/time` | → `{nowMs}` |
 | GET | `/healthz` | → `ok` |
 
@@ -78,6 +80,25 @@ proxied by Caddy). Wrong passwords are rate-limited per client address.
 | `mpv.reply` | projector → sender | yes | `MpvReply` |
 | `mpv.state` | projector → all | no | `MpvState` (4 Hz while playing, plus on change) |
 | `mpv.event` | projector → all | yes | `MpvEvent` |
+
+## Media, renditions and HLS
+
+A title is a directory. `vspush` writes the primary encode as `movie.mp4` and,
+when the source is bigger than it, a second one as `movie.720p.mp4`;
+`MediaMeta.renditions` lists them all, largest first, including the primary.
+An empty list means the title predates renditions: its MP4 is not fragmented,
+it has no playlists, and `PlaybackState.url` is the file itself.
+
+Otherwise `PlaybackState.url` is the master playlist. Both playlists are
+generated on demand from the fragmented MP4s already on disk — `EXT-X-MAP` for
+everything before the first `moof`, then one `EXT-X-BYTERANGE` per
+`moof`+`mdat` pair — so there is no second copy of the media and `movie.mp4`
+stays playable as a plain file.
+
+The signature covers the **title**, not the file: a player following a
+playlist sends no headers we control, so one `?e=&s=` has to reach every
+rendition and every range. Holding any URI in a title already means holding
+the title, so signing them separately would buy nothing.
 
 ## Playback actions
 

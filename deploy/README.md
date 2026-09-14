@@ -181,8 +181,9 @@ file with `mpv --list-tracks file.mkv`.
 That produces a title directory in `deploy/media/`:
 
 ```
-<id>/movie.mp4    H.264 High + AAC-LC, moov first, IDR every ~2s
-<id>/meta.json    duration, geometry, codecs, chapters, provenance
+<id>/movie.mp4        H.264 High + AAC-LC, fragmented, IDR every ~2s
+<id>/movie.720p.mp4   the same film at 3 Mbps, unless the source is smaller
+<id>/meta.json        duration, geometry, codecs, chapters, renditions
 ```
 
 One ffmpeg pass does it, at roughly 8x real time with a hardware encoder. It
@@ -197,10 +198,42 @@ Defaults: video 5000 kbps, audio 192 kbps AAC (the source is already lossy, and
 a second generation at 128k is audibly worse on music), keyframes every 2 s —
 which is also the seek granularity. All overridable; see `vspush --help`.
 
+#### Renditions and HLS
+
+A viewer on a weak link used to stall where WebRTC would have gone blurry.
+`--renditions` (default `720p`) writes a second, smaller encode next to the
+first; it is skipped when the source is not bigger than it, so a 720p show
+gains nothing and costs nothing. `--renditions none` turns it off. Budget
+about +40% disk per title for the extra one.
+
+The MP4s are **fragmented** — an empty `moov` at the front followed by
+self-contained `moof`+`mdat` pairs at every keyframe. The server publishes
+them as HLS over the same bytes, with no second copy of the media:
+
+```
+GET /media/<id>/index.m3u8     master; one variant per rendition
+GET /media/<id>/<name>.m3u8    that rendition, as EXT-X-BYTERANGE ranges
+GET /media/<id>/movie.mp4      the bytes those ranges address
+```
+
+Both playlists are generated on demand from the files on disk, behind the same
+signed-URL scheme as the media (the signature covers the title, so one covers
+its playlists and every rendition), and the parsed fragment layout is cached
+per file. There is nothing extra to back up and nothing to regenerate after a
+restart — deleting the cache is restarting the process.
+
+In the browser: hls.js on Chrome and Firefox, native HLS on Safari, and a
+plain `<video src>` for titles pushed before any of this existed, which have
+no fragments to address. The Quality menu in the transport bar (Auto / 1080p /
+720p) sets the level within the running player, so changing rendition
+mid-film does not touch the `<video>` element or throw away the buffer.
+Safari adapts on its own and shows no menu.
+
 #### Housekeeping
 
-A 1080p episode is 250–300 MB, so a 45 GB boot volume holds roughly 150. The
-host can delete titles from the Queue tab.
+A 1080p episode is 250–300 MB, plus about 40% again for the 720p rendition, so
+a 45 GB boot volume holds roughly 100. The host can delete titles from the
+Library tab, and the library view shows free space for exactly this reason.
 
 ```bash
 ls -lh ~/videostream/deploy/media/

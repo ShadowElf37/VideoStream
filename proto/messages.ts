@@ -310,4 +310,26 @@ export interface MediaMeta {
   subTrack?: number;
   chapters?: Array<{ startMs: number; title?: string }>;
   pushedAt: string;
+  /**
+   * Every encode of this title, largest first, including the primary one in
+   * movie.mp4. Empty for a title pushed before renditions existed, which is
+   * also the signal that it has no HLS playlist.
+   */
+  renditions?: Rendition[];
+}
+
+/**
+ * One encode of a title. A second rendition is what replaces simulcast for
+ * hosted media: a viewer on a weak link used to stall where WebRTC would have
+ * gone blurry.
+ */
+export interface Rendition {
+  /** How a viewer picks it and how its playlist is addressed: "1080p", "720p". */
+  name: string;
+  /** The file inside the title directory. */
+  file: string;
+  width: number;
+  height: number;
+  kbps: number;
+  sizeBytes: number;
 }

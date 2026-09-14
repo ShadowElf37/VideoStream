@@ -8,8 +8,14 @@
 //
 // The output is a title directory the app server can serve directly:
 //
-//	<id>/movie.mp4    H.264 High + AAC-LC, moov first, IDR every ~2s
-//	<id>/meta.json    duration, geometry, codecs, chapters, provenance
+//	<id>/movie.mp4        H.264 High + AAC-LC, fragmented, IDR every ~2s
+//	<id>/movie.720p.mp4   the same film at 3 Mbps, unless the source is smaller
+//	<id>/meta.json        duration, geometry, codecs, chapters, renditions
+//
+// The output is fragmented (moof+mdat pairs behind an empty moov) so the
+// server can publish it as HLS with byte ranges over the same bytes — which
+// is what lets a viewer change rendition mid-film without the <video> element
+// being torn down. A global sidx keeps it seekable as a plain file too.
 //
 // One ffmpeg pass does all of it: libass renders the subtitles with the fonts
 // attached to the source, and they are burned in because nothing downstream
@@ -50,6 +56,7 @@ type opts struct {
 	kbps    int
 	akbps   int
 	height  int
+	rends   string
 	gopSecs float64
 	dest    string
 	ffmpeg  string
@@ -67,6 +74,7 @@ func main() {
 	flag.IntVar(&o.kbps, "bitrate", 5000, "target video bitrate in kbps")
 	flag.IntVar(&o.akbps, "audio-bitrate", 192, "audio bitrate in kbps; 192 is effectively transparent for music, 96 is plenty for speech")
 	flag.IntVar(&o.height, "height", 0, "scale to this height, preserving aspect (0 = keep source)")
+	flag.StringVar(&o.rends, "renditions", "720p", "extra renditions to write alongside the primary one, comma-separated ("+renditionNames()+"); \"none\" for just the primary. Each is skipped when it is not smaller than the primary — a 720p source gains nothing from a 720p rendition.")
 	flag.Float64Var(&o.gopSecs, "gop", 2, "seconds between keyframes; also the seek granularity and a late joiner's wait")
 	flag.StringVar(&o.dest, "dest", "", "scp destination for the finished title, e.g. user@host:/srv/media")
 	flag.StringVar(&o.ffmpeg, "ffmpeg", "ffmpeg", "ffmpeg binary")
@@ -123,6 +131,61 @@ func run(ctx context.Context, log *slog.Logger, o opts) error {
 		"duration", time.Duration(src.DurationMS)*time.Millisecond)
 
 	return buildMP4(ctx, log, o, abs, id, fps, start)
+}
+
+// renditionSpec is a named encode. A viewer on a 3 Mbps link used to stall
+// where WebRTC would have gone blurry; a second, smaller rendition is the
+// mitigation, and the bitrates are the ones the projector's presets already
+// use so the numbers mean the same thing in both modes.
+type renditionSpec struct {
+	name   string
+	height int
+	kbps   int
+}
+
+var renditionSpecs = []renditionSpec{
+	{"1080p", 1080, 5000},
+	{"720p", 720, 3000},
+	{"540p", 540, 1500},
+}
+
+func renditionNames() string {
+	names := make([]string, 0, len(renditionSpecs))
+	for _, r := range renditionSpecs {
+		names = append(names, r.name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// parseRenditions resolves the flag against the primary height, dropping
+// anything that is not actually smaller.
+func parseRenditions(list string, primaryHeight int) ([]renditionSpec, error) {
+	list = strings.TrimSpace(list)
+	if list == "" || list == "none" {
+		return nil, nil
+	}
+	var out []renditionSpec
+	for _, want := range strings.Split(list, ",") {
+		want = strings.TrimSpace(want)
+		if want == "" {
+			continue
+		}
+		var spec *renditionSpec
+		for i := range renditionSpecs {
+			if renditionSpecs[i].name == want {
+				spec = &renditionSpecs[i]
+				break
+			}
+		}
+		if spec == nil {
+			return nil, fmt.Errorf("unknown rendition %q (known: %s)", want, renditionNames())
+		}
+		if primaryHeight > 0 && spec.height >= primaryHeight {
+			continue
+		}
+		out = append(out, *spec)
+	}
+	return out, nil
 }
 
 // videoEncoder picks the hardware H.264 encoder for the host. Quality at 5
@@ -243,7 +306,7 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 	}
 	movie := filepath.Join(dir, proto.MovieFileName)
 
-	if err := transcodeMP4(ctx, log, o, src, movie, fps); err != nil {
+	if err := transcodeMP4(ctx, log, o, src, movie, fps, o.height, o.kbps); err != nil {
 		return fmt.Errorf("transcode: %w", err)
 	}
 	log.Info("transcode done", "took", time.Since(start).Round(time.Second))
@@ -256,6 +319,41 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 	if err != nil {
 		return err
 	}
+
+	// The primary encode is itself a rendition — naming it in the list is
+	// what lets the server publish a master playlist with it as a variant,
+	// and what tells the client this title is fragmented at all.
+	renditions := []proto.Rendition{{
+		Name: proto.RenditionName(probe.Height), File: proto.MovieFileName,
+		Width: probe.Width, Height: probe.Height, Kbps: o.kbps, SizeBytes: st.Size(),
+	}}
+	extra, err := parseRenditions(o.rends, probe.Height)
+	if err != nil {
+		return err
+	}
+	for _, spec := range extra {
+		out := filepath.Join(dir, proto.RenditionFileName(spec.name, false))
+		rstart := time.Now()
+		if err := transcodeMP4(ctx, log, o, src, out, fps, spec.height, spec.kbps); err != nil {
+			return fmt.Errorf("transcode %s: %w", spec.name, err)
+		}
+		rp, err := probeMKV(ctx, o.ffprobe, out)
+		if err != nil {
+			return fmt.Errorf("probing %s: %w", spec.name, err)
+		}
+		rst, err := os.Stat(out)
+		if err != nil {
+			return err
+		}
+		renditions = append(renditions, proto.Rendition{
+			Name: spec.name, File: filepath.Base(out),
+			Width: rp.Width, Height: rp.Height, Kbps: spec.kbps, SizeBytes: rst.Size(),
+		})
+		log.Info("rendition done", "name", spec.name,
+			"size", fmt.Sprintf("%.1f MiB", float64(rst.Size())/(1<<20)),
+			"took", time.Since(rstart).Round(time.Second))
+	}
+
 	chapters, err := probeChapters(ctx, o.ffprobe, src)
 	if err != nil {
 		// Chapters are a convenience; a source without them is normal and a
@@ -271,8 +369,9 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 		VideoCodec: "h264", AudioCodec: "aac",
 		SizeBytes:  st.Size(),
 		AudioTrack: o.aid, SubTrack: o.sid,
-		Chapters: chapters,
-		PushedAt: time.Now().UTC().Format(time.RFC3339),
+		Chapters:   chapters,
+		PushedAt:   time.Now().UTC().Format(time.RFC3339),
+		Renditions: renditions,
 	}
 	blob, err := json.MarshalIndent(&meta, "", "  ")
 	if err != nil {
@@ -283,6 +382,7 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 	}
 
 	log.Info("built", "id", id, "path", dir,
+		"renditions", len(renditions),
 		"size", fmt.Sprintf("%.1f MiB", float64(st.Size())/(1<<20)),
 		"duration", time.Duration(meta.DurationMS)*time.Millisecond,
 		"chapters", len(chapters),
@@ -317,7 +417,7 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 // AAC-LC instead of Opus (Opus in MP4 is not reliably supported across Safari
 // and older MSE), and High profile instead of Main advertised as constrained
 // baseline.
-func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string, fps float64) error {
+func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string, fps float64, height, kbps int) error {
 	ff, err := findSubtitleFFmpeg(o.ffmpeg)
 	if err != nil {
 		return err
@@ -346,8 +446,8 @@ func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string,
 		// si is 0-based among subtitle streams; --sid is 1-based, as in mpv.
 		filters = append(filters, fmt.Sprintf("subtitles=%s:si=%d", filepath.Base(linked), o.sid-1))
 	}
-	if o.height > 0 {
-		filters = append(filters, fmt.Sprintf("scale=-2:%d", o.height))
+	if height > 0 {
+		filters = append(filters, fmt.Sprintf("scale=-2:%d", height))
 	}
 
 	audioIdx := 0
@@ -376,22 +476,27 @@ func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string,
 		// where they are needed instead of holding a flat bitrate through
 		// scenes that do not need it. VideoToolbox has no CRF equivalent.
 		args = append(args, "-crf", "20", "-preset", "medium",
-			"-maxrate", fmt.Sprintf("%dk", o.kbps), "-bufsize", fmt.Sprintf("%dk", o.kbps*2))
+			"-maxrate", fmt.Sprintf("%dk", kbps), "-bufsize", fmt.Sprintf("%dk", kbps*2))
 	} else {
-		args = append(args, "-b:v", fmt.Sprintf("%dk", o.kbps),
-			"-maxrate", fmt.Sprintf("%dk", o.kbps*3/2),
-			"-bufsize", fmt.Sprintf("%dk", o.kbps*2))
+		args = append(args, "-b:v", fmt.Sprintf("%dk", kbps),
+			"-maxrate", fmt.Sprintf("%dk", kbps*3/2),
+			"-bufsize", fmt.Sprintf("%dk", kbps*2))
 	}
 	args = append(args,
 		"-c:a", "aac", "-b:a", fmt.Sprintf("%dk", o.akbps), "-ac", "2", "-ar", "48000",
-		// moov before mdat, so the browser can start playing and can seek
-		// without first fetching the tail of the file.
-		"-movflags", "+faststart",
+		// Fragmented: an empty moov at the front followed by self-contained
+		// moof+mdat pairs at every keyframe, which is exactly the shape the
+		// server needs to publish byte-range HLS over the same bytes. The
+		// global sidx is written last and keeps the file seekable when a
+		// browser plays it directly as <video src>, where there is no
+		// playlist to map time to bytes.
+		"-movflags", "+frag_keyframe+empty_moov+default_base_moof+global_sidx",
 		out,
 	)
 
 	log.Info("transcoding", "ffmpeg", ff, "encoder", enc, "aid", o.aid, "sid", o.sid,
-		"kbps", o.kbps, "audioKbps", o.akbps, "gopFrames", gopFrames)
+		"out", filepath.Base(out), "height", height, "kbps", kbps,
+		"audioKbps", o.akbps, "gopFrames", gopFrames)
 	cmd := exec.CommandContext(ctx, ff, args...)
 	cmd.Dir = work // so the bare filename in the filter resolves
 	cmd.Stdout = os.Stderr

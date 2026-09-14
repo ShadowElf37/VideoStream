@@ -11,6 +11,7 @@ import { publish } from '@/lib/data';
 import { formatTime } from '@/lib/format';
 import { Topics } from '@/proto/messages';
 import { useSession } from '@/state/session';
+import { HostedQuality } from './HostBar';
 import { SeekBar } from './SeekBar';
 
 /** Read-only progress for viewers plus "Request pause". */
@@ -67,6 +68,7 @@ export function ViewerBar({ visible, videoRef }: { visible: boolean; videoRef: R
           </span>
           {now.title && <span className="text-[12px] text-white/70 truncate">{now.title}</span>}
           <span className="flex-1" />
+          <HostedQuality />
           <button
             onClick={() => void requestPause()}
             disabled={cooldown}

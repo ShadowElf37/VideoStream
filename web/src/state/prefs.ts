@@ -22,6 +22,8 @@ export interface Prefs {
   notificationSounds: boolean;
   movieVolume: number;
   movieMuted: boolean;
+  /** Hosted playback rendition: 'auto', or a rendition name like '720p'. */
+  movieQuality: string;
   voiceVolumes: Record<string, number>;
   sidebarOpen: boolean;
   sidebarWidth: number;
@@ -58,6 +60,7 @@ export const DEFAULT_PREFS: Prefs = {
   notificationSounds: true,
   movieVolume: 1,
   movieMuted: false,
+  movieQuality: 'auto',
   voiceVolumes: {},
   sidebarOpen: true,
   sidebarWidth: 340,

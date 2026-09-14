@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,54 +16,67 @@ var secret = []byte("test-secret-at-least-32-bytes-ok")
 // A signed URL is a capability handed to a browser, so the ways it can be
 // abused are the ways this must fail.
 func TestVerifyRejectsTampering(t *testing.T) {
-	const id, file = "madoka_04", proto.MovieFileName
-	q := Sign(secret, id, file, time.Hour)
+	const id = "madoka_04"
+	q := Sign(secret, id, time.Hour)
 	exp, sig := parseQuery(t, q)
 
-	if err := Verify(secret, id, file, exp, sig); err != nil {
+	if err := Verify(secret, id, exp, sig); err != nil {
 		t.Fatalf("a freshly signed URL was rejected: %v", err)
 	}
 
 	for _, tc := range []struct {
-		name           string
-		id, file, e, s string
+		name     string
+		id, e, s string
 	}{
-		{"different title", "other_title", file, exp, sig},
-		{"different file", id, proto.MetaFileName, exp, sig},
-		{"extended expiry", id, file, "99999999999", sig},
-		{"forged signature", id, file, exp, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
-		{"empty signature", id, file, exp, ""},
-		{"empty expiry", id, file, "", sig},
-		{"non-numeric expiry", id, file, "soon", sig},
+		{"different title", "other_title", exp, sig},
+		{"extended expiry", id, "99999999999", sig},
+		{"forged signature", id, exp, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+		{"empty signature", id, exp, ""},
+		{"empty expiry", id, "", sig},
+		{"non-numeric expiry", id, "soon", sig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := Verify(secret, tc.id, tc.file, tc.e, tc.s); err == nil {
+			if err := Verify(secret, tc.id, tc.e, tc.s); err == nil {
 				t.Error("accepted")
 			}
 		})
 	}
 
 	// A different key must not validate.
-	if err := Verify([]byte("a completely different secret!!!"), id, file, exp, sig); err == nil {
+	if err := Verify([]byte("a completely different secret!!!"), id, exp, sig); err == nil {
 		t.Error("a signature from another key was accepted")
 	}
 }
 
-func TestVerifyRejectsExpired(t *testing.T) {
-	q := Sign(secret, "x", proto.MovieFileName, -time.Second)
+// One signature covers a whole title, because the HLS playlists reference
+// their own renditions and a player following them sends no headers we
+// control. Holding any URI in a title already means holding the title.
+func TestSignatureCoversEveryFileInTheTitle(t *testing.T) {
+	q := Sign(secret, "madoka_04", time.Hour)
 	exp, sig := parseQuery(t, q)
-	if err := Verify(secret, "x", proto.MovieFileName, exp, sig); err == nil {
+	for _, file := range []string{proto.MovieFileName, "movie.720p.mp4", proto.MasterPlaylistName, "720p.m3u8"} {
+		if !ValidFile(file) && !strings.HasSuffix(file, ".m3u8") {
+			t.Errorf("%s is not servable at all", file)
+		}
+		if err := Verify(secret, "madoka_04", exp, sig); err != nil {
+			t.Errorf("the title signature did not authorise %s: %v", file, err)
+		}
+	}
+}
+
+func TestVerifyRejectsExpired(t *testing.T) {
+	q := Sign(secret, "x", -time.Second)
+	exp, sig := parseQuery(t, q)
+	if err := Verify(secret, "x", exp, sig); err == nil {
 		t.Error("an expired signature was accepted")
 	}
 }
 
-// Length-prefixing the signed fields is what stops ("a","bc") and ("ab","c")
-// signing identically.
+// Length-prefixing the signed fields is what stops a title id that contains
+// the separator from signing as another one.
 func TestSignatureIsUnambiguous(t *testing.T) {
-	a := Sign(secret, "ab", "c", time.Hour)
-	b := Sign(secret, "a", "bc", time.Hour)
-	if a == b {
-		t.Error("two different (id, file) pairs produced the same signature")
+	if Sign(secret, "ab|1", time.Hour) == Sign(secret, "ab", time.Hour) {
+		t.Error("two different ids produced the same signature")
 	}
 }
 

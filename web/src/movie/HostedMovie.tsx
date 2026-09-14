@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import type { PlaybackState } from '@/proto/messages';
+import { usePrefs } from '@/state/prefs';
 import { useSession } from '@/state/session';
 import { bufferedAheadMs, decide, initialSyncState, RESUME_BUFFER_MS, START_BUFFER_MS, type SyncState } from './sync';
 import { clientNowMs, targetMs } from './clock';
+import { useQuality } from './quality';
 import { isReady, REPORT_PERIOD_MS, reportKey } from './ready';
+import { attachSource, resolveRemembered, type MovieSource } from './source';
 import { useSyncStats, type Correction } from './syncStats';
 
 /**
@@ -76,24 +79,62 @@ export function HostedMovie({
     return () => clearInterval(id);
   }, [state.url, postReport]);
 
-  // Point the element at the file. Guarded on the URL so that a re-render, a
-  // pause, or a new broadcast never reassigns src — which would throw away
-  // the whole buffer, the one thing this design exists to keep.
+  // Point the element at the film. Guarded on the URL so that a re-render, a
+  // pause, or a new broadcast never reattaches — which would throw away the
+  // whole buffer, the one thing this design exists to keep. Changing
+  // rendition does not come through here at all: hls.js switches levels
+  // inside the same element, and the element is what holds the buffer.
   const currentUrl = useRef<string | null>(null);
+  const source = useRef<MovieSource | null>(null);
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !state.url) return;
     if (currentUrl.current === state.url) return;
     currentUrl.current = state.url;
-    el.src = state.url;
-    el.preload = 'auto';
+    source.current?.destroy();
+    source.current = null;
+
     // Start near where the room is rather than at zero, then let the loop
     // close the rest.
-    el.currentTime = targetMs(anchorOf(state), offsetMs) / 1000;
+    const startAt = targetMs(anchorOf(state), offsetMs) / 1000;
     sync.current = initialSyncState;
     setBuffering(true);
+
+    let stale = false;
+    void attachSource(el, state.url, startAt).then((s) => {
+      // The film changed again while hls.js was being fetched.
+      if (stale) {
+        s.destroy();
+        return;
+      }
+      source.current = s;
+    });
+    return () => {
+      stale = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.url, videoRef]);
+
+  // Tearing the source down on unmount matters more here than it used to: an
+  // hls.js instance left running keeps fetching fragments for a film nobody
+  // is watching.
+  useEffect(
+    () => () => {
+      source.current?.destroy();
+      source.current = null;
+      useQuality.getState().clear();
+    },
+    [],
+  );
+
+  // The remembered quality, applied once the levels are known and validated
+  // against them — a title with no 1080p rendition must not leave the menu
+  // claiming one.
+  const levels = useQuality((s) => s.levels);
+  useEffect(() => {
+    if (levels.length === 0) return;
+    useQuality.getState().select(resolveRemembered(levels, usePrefs.getState().movieQuality));
+  }, [levels]);
 
   // Stall detection, debounced. The raw events lie: every seek fires
   // `waiting`, and turning that straight into a spinner makes the UI strobe.

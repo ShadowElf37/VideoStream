@@ -20,7 +20,7 @@ const (
 	// TopicPlaybackIntent echoes who did what the moment a command lands,
 	// ahead of the state it produces.
 	TopicPlaybackIntent = "playback.intent"
-	TopicMpvEvent = "mpv.event"
+	TopicMpvEvent       = "mpv.event"
 )
 
 // Roles carried in LiveKit token metadata.

@@ -55,13 +55,35 @@ func ValidID(id string) bool {
 
 // ValidFile reports whether name is a file a client may fetch from a title.
 // An allowlist rather than a character check: everything servable is a known
-// name, so there is no reason to accept anything else.
+// name or a name this server generated, so there is no reason to accept
+// anything else.
 func ValidFile(name string) bool {
 	switch name {
 	case proto.MovieFileName, proto.MetaFileName:
 		return true
 	}
+	// movie.<rendition>.mp4, written by vspush alongside the primary encode.
+	if rest, ok := strings.CutPrefix(name, "movie."); ok {
+		if r, ok := strings.CutSuffix(rest, ".mp4"); ok {
+			return ValidRenditionName(r)
+		}
+	}
 	return false
+}
+
+// ValidRenditionName reports whether s is a plausible rendition name — the
+// thing that appears both in movie.<name>.mp4 and in <name>.m3u8, and which
+// therefore reaches a path.
+func ValidRenditionName(s string) bool {
+	if s == "" || len(s) > 16 {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 // Path resolves a file inside a title, refusing anything that escapes it.

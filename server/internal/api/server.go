@@ -25,6 +25,9 @@ type Server struct {
 	lkClient *lksdk.RoomServiceClient
 	logger   *slog.Logger
 	library  *media.Library
+	// index caches the fragment layout of the MP4s the HLS playlists are
+	// generated from, so a rendition switch does not re-walk a film.
+	index    *media.Index
 	director *playback.Director
 	watcher  *occupancy.Watcher
 	// pwLimiter throttles password attempts per client address, so the one
@@ -40,6 +43,7 @@ func NewServer(cfg *config.Config, roomsSvc *rooms.Service, chatSvc *chat.Servic
 	s := &Server{cfg: cfg, rooms: roomsSvc, chat: chatSvc, lkClient: lkClient, logger: logger}
 	s.pwLimiter = chat.NewLimiter(5, 30*time.Second)
 	s.watcher = occupancy.New(lkClient, cfg.LinksRotateAfter, s.onRoomEmpty, logger)
+	s.index = media.NewIndex()
 	if cfg.MediaRoot != "" {
 		s.library = media.New(cfg.MediaRoot)
 		s.director = playback.New(chat.NewLiveKitBroadcaster(lkClient), &mediaResolver{cfg: cfg, lib: s.library})

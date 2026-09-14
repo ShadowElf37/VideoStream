@@ -18,6 +18,7 @@ import { useNowPlaying } from '@/movie/store';
 import { useTransport } from '@/movie/useTransport';
 import { useBufferedRanges } from '@/movie/useBufferedRanges';
 import { useRoomLag } from '@/movie/useRoomLag';
+import { AUTO, qualityLabel, useQuality } from '@/movie/quality';
 import { cn } from '@/lib/cn';
 import { formatDelay, formatTime, trackLabel } from '@/lib/format';
 import type { QualityPreset } from '@/proto/messages';
@@ -151,6 +152,10 @@ export function HostBar({
 
           <span className="flex-1" />
 
+          {/* Rendition, for hosted media. Unlike the live preset this changes
+              nothing for anyone else: it is one viewer's own bandwidth. */}
+          <HostedQuality onPin={onPin} />
+
           {/* Speed, audio, subtitles, mpv volume and the encoder preset are all
               live-projector controls: they change what mpv is doing right now.
               A pushed file has none of those knobs left. */}
@@ -250,7 +255,7 @@ export function HostBar({
             </div>
           </Popover>
 
-          {/* Quality */}
+          {/* Encoder preset (live projector) */}
           <Menu
             onOpenChange={onPin}
             trigger={
@@ -387,5 +392,42 @@ function DelayRow({
         </button>
       </span>
     </div>
+  );
+}
+
+/**
+ * The rendition picker, for hosted media that has more than one.
+ *
+ * It renders nothing at all when the player cannot switch — a title pushed
+ * before renditions existed, or Safari, which plays HLS natively and adapts on
+ * its own with no level API to drive. A menu with one entry, or one that does
+ * not do what it says, is the control this replaces.
+ */
+export function HostedQuality({ onPin }: { onPin?: (v: boolean) => void }) {
+  const levels = useQuality((s) => s.levels);
+  const selected = useQuality((s) => s.selected);
+  const active = useQuality((s) => s.active);
+  const select = useQuality((s) => s.select);
+  if (levels.length < 2) return null;
+  return (
+    <Menu
+      onOpenChange={onPin}
+      trigger={
+        <button className="h-8 px-2.5 rounded-lg text-[12px] text-white/90 hover:bg-white/10" aria-label="Quality">
+          {qualityLabel(selected, levels, active)}
+        </button>
+      }
+    >
+      <MenuLabel>Quality</MenuLabel>
+      <MenuItem selected={selected === AUTO} onSelect={() => select(AUTO)}>
+        Auto
+      </MenuItem>
+      {levels.map((l) => (
+        <MenuItem key={l.name} selected={selected === l.name} onSelect={() => select(l.name)}>
+          {l.name}
+          {l.kbps > 0 ? ` · ${l.kbps >= 1000 ? `${(l.kbps / 1000).toFixed(1)} Mbps` : `${l.kbps} kbps`}` : ''}
+        </MenuItem>
+      ))}
+    </Menu>
   );
 }
