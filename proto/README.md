@@ -90,7 +90,17 @@ proxied by Caddy). Wrong passwords are rate-limited per client address.
 | `play` / `pause` / `toggle` | — | host, or anyone when `anyoneCanPause` |
 | `seek` | `{posMs, relative?}` | host |
 | `stop` | — | host |
+| `reorder` | `{queue}` — the whole new order | host |
+| `dequeue` | `{mediaId}` | host |
 | `start` | — | host (overrides a `waitForEveryone` hold) |
+
+`reorder` takes the whole queue rather than a move, because a move is only
+meaningful against a particular starting order and a client's may be one
+broadcast behind. A list that is not the current queue permuted — the same
+titles with the same multiplicities — is a stale client, and gets 409 rather
+than silently dropping whatever was queued since it last looked. `dequeue`
+removes the first occurrence, since the same title queued twice is two things
+to watch; 404 if it is not there.
 
 ## The intent echo
 

@@ -4,6 +4,7 @@ import {
   Clapperboard,
   Folder,
   FolderUp,
+  GripVertical,
   Globe,
   ListPlus,
   ListVideo,
@@ -12,6 +13,7 @@ import {
   Radio,
   Search,
   Trash2,
+  X,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useMpv, useMpvStore } from '@/host/useMpv';
@@ -25,6 +27,7 @@ import { useSession } from '@/state/session';
 import { Button } from '@/ui/Button';
 import { Input } from '@/ui/Field';
 import { Tooltip } from '@/ui/Tooltip';
+import { useReorder } from './useReorder';
 
 const MEDIA_RE = /\.(mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|flv|mpg|mpeg|ogv|mp3|flac|m4a|ogg|opus|wav|aac)$/i;
 
@@ -96,7 +99,7 @@ export function LibraryTab({ active }: { active: boolean }) {
 
   const byId = useMemo(() => new Map(library.map((m) => [m.id, m])), [library]);
   const nowPlaying = playback && !playback.idle ? playback : null;
-  const upNext = (nowPlaying?.queue ?? []).map((id) => byId.get(id)?.title ?? id);
+  const queue = useMemo(() => nowPlaying?.queue ?? [], [nowPlaying]);
   const titles = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return [...library]
@@ -122,19 +125,7 @@ export function LibraryTab({ active }: { active: boolean }) {
               <span className="truncate">{nowPlaying.title}</span>
               <span className="ml-auto text-[11px] text-muted font-mono shrink-0">{formatTime(nowPlaying.durationMs / 1000)}</span>
             </div>
-            {upNext.length > 0 && (
-              <>
-                <div className="px-2 pt-1 text-[11px] uppercase tracking-wider text-muted">Up next</div>
-                <ol className="px-2 pb-1">
-                  {upNext.map((t, i) => (
-                    <li key={`${t}-${i}`} className="flex items-center gap-2 h-7 text-[12.5px] text-muted">
-                      <span className="w-4 text-right font-mono text-[11px]">{i + 1}</span>
-                      <span className="truncate">{t}</span>
-                    </li>
-                  ))}
-                </ol>
-              </>
-            )}
+            {queue.length > 0 && <UpNext queue={queue} byId={byId} isHost={isHost} />}
           </section>
         )}
 
@@ -166,6 +157,68 @@ export function LibraryTab({ active }: { active: boolean }) {
         <ProjectorSection isHost={isHost} hostedActive={!!nowPlaying} />
       </div>
     </div>
+  );
+}
+
+/**
+ * The queue behind whatever is playing. For a host it is draggable by the
+ * handle, movable with Alt+↑/↓ for anyone not using a pointer, and each row
+ * has an × — the three things "drag reorder" actually has to mean to be
+ * usable. For everyone else it is the same list, read-only.
+ */
+function UpNext({ queue, byId, isHost }: { queue: string[]; byId: Map<string, Title>; isHost: boolean }) {
+  const commit = async (body: { action: string; queue?: string[]; mediaId?: string }, whenWrong: string) => {
+    const session = useSession.getState().token?.session;
+    if (!session) throw new Error('not connected');
+    try {
+      await api.playback(session, body);
+    } catch (e) {
+      // The optimistic order is dropped by the hook when this throws; say why,
+      // because a list that silently snaps back looks broken.
+      useSession.getState().toast(e instanceof Error ? e.message : whenWrong, 'warn', 3000);
+      throw e;
+    }
+  };
+
+  const reorder = useReorder(queue, (next) => commit({ action: 'reorder', queue: next }, 'Could not reorder the queue'));
+
+  return (
+    <>
+      <div className="px-2 pt-1 text-[11px] uppercase tracking-wider text-muted">Up next</div>
+      <ol ref={reorder.listRef} className="px-2 pb-1">
+        {reorder.order.map((id, i) => (
+          <li
+            key={`${id}-${i}`}
+            className={cn(
+              'group flex items-center gap-1.5 h-7 text-[12.5px] text-muted rounded-md',
+              reorder.dragging === i && 'bg-active text-text',
+            )}
+          >
+            {isHost ? (
+              <button
+                {...reorder.handleProps(i)}
+                aria-label={`Reorder ${byId.get(id)?.title ?? id}. Alt with the up and down arrows moves it.`}
+                className="size-5 shrink-0 inline-flex items-center justify-center rounded text-muted hover:text-text cursor-grab active:cursor-grabbing touch-none"
+              >
+                <GripVertical className="size-3.5" />
+              </button>
+            ) : (
+              <span className="w-4 text-right font-mono text-[11px] shrink-0">{i + 1}</span>
+            )}
+            <span className="truncate">{byId.get(id)?.title ?? id}</span>
+            {isHost && (
+              <button
+                onClick={() => reorder.remove(i, () => commit({ action: 'dequeue', mediaId: id }, 'Could not remove that'))}
+                aria-label={`Remove ${byId.get(id)?.title ?? id} from up next`}
+                className="ml-auto size-5 shrink-0 inline-flex items-center justify-center rounded text-muted opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-danger hover:bg-active"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </li>
+        ))}
+      </ol>
+    </>
   );
 }
 

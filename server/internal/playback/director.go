@@ -30,6 +30,15 @@ import (
 // ErrNoMedia is returned for transport commands when nothing is loaded.
 var ErrNoMedia = errors.New("nothing is loaded")
 
+// ErrNotAPermutation is returned when a reorder is not the same set of titles
+// the queue currently holds. Rejecting rather than reconciling is deliberate:
+// a client whose view of the queue is stale would otherwise silently drop
+// whatever was added since it last looked.
+var ErrNotAPermutation = errors.New("that is not the current queue reordered")
+
+// ErrNotQueued is returned when asked to remove something that is not there.
+var ErrNotQueued = errors.New("that title is not in the queue")
+
 // Broadcaster publishes a payload to everyone in the room. The chat
 // service's LiveKit broadcaster satisfies this.
 type Broadcaster interface {
@@ -429,6 +438,66 @@ func (d *Director) Stop(ctx context.Context, actor proto.PlaybackActor) {
 	in := d.intentLocked(proto.IntentStop, actor, was, 0)
 	d.mu.Unlock()
 	d.announce(ctx, in)
+}
+
+// Reorder replaces the queue with the same titles in a different order.
+//
+// It takes the whole queue rather than a move, because a move is only
+// meaningful against a particular starting order and the client's may be one
+// broadcast behind. Requiring the full list makes the staleness detectable
+// instead of silently destructive.
+func (d *Director) Reorder(ctx context.Context, queue []string) error {
+	d.mu.Lock()
+	r := d.room
+	if !samePermutation(r.queue, queue) {
+		d.mu.Unlock()
+		return ErrNotAPermutation
+	}
+	r.queue = append([]string(nil), queue...)
+	d.mu.Unlock()
+	d.Publish(ctx)
+	return nil
+}
+
+// Dequeue drops one title from the queue. Only the first occurrence: the same
+// title queued twice is two things to watch, not one.
+func (d *Director) Dequeue(ctx context.Context, mediaID string) error {
+	d.mu.Lock()
+	r := d.room
+	at := -1
+	for i, id := range r.queue {
+		if id == mediaID {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		d.mu.Unlock()
+		return ErrNotQueued
+	}
+	r.queue = append(append([]string(nil), r.queue[:at]...), r.queue[at+1:]...)
+	d.mu.Unlock()
+	d.Publish(ctx)
+	return nil
+}
+
+// samePermutation reports whether two lists hold the same titles with the same
+// multiplicities — a title queued twice must still be queued twice.
+func samePermutation(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, v := range a {
+		counts[v]++
+	}
+	for _, v := range b {
+		counts[v]--
+		if counts[v] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // The intent echo

@@ -3,6 +3,7 @@ package playback
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -824,5 +825,106 @@ func TestAdvanceEchoesWithNoActor(t *testing.T) {
 	}
 	if in.Actor.Name != "" || in.Actor.Identity != "" {
 		t.Errorf("the playlist advancing named an actor: %+v", in.Actor)
+	}
+}
+
+// Reordering and dequeuing --------------------------------------------------
+
+func queueOf(t *testing.T, d *Director) []string {
+	t.Helper()
+	return d.Snapshot().Queue
+}
+
+func TestReorder(t *testing.T) {
+	d, _ := newDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, alice, "film"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"short", "next", "short"} {
+		if err := d.Enqueue(ctx, alice, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := queueOf(t, d); len(got) != 3 {
+		t.Fatalf("queue = %v, want three items", got)
+	}
+
+	if err := d.Reorder(ctx, []string{"next", "short", "short"}); err != nil {
+		t.Fatal(err)
+	}
+	got := queueOf(t, d)
+	if len(got) != 3 || got[0] != "next" || got[1] != "short" || got[2] != "short" {
+		t.Errorf("queue = %v, want [next short short]", got)
+	}
+
+	// Anything that is not the same multiset is a stale client, not an edit.
+	for _, bad := range [][]string{
+		{"next", "short"},                   // dropped one
+		{"next", "short", "short", "short"}, // invented one
+		{"next", "short", "film"},           // swapped one out
+		{"next", "next", "short"},           // wrong multiplicity
+	} {
+		if err := d.Reorder(ctx, bad); !errors.Is(err, ErrNotAPermutation) {
+			t.Errorf("Reorder(%v) = %v, want ErrNotAPermutation", bad, err)
+		}
+	}
+	// And none of those rejections touched the queue.
+	if got := queueOf(t, d); len(got) != 3 || got[0] != "next" {
+		t.Errorf("a rejected reorder changed the queue: %v", got)
+	}
+}
+
+func TestDequeue(t *testing.T) {
+	d, _ := newDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, alice, "film"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"short", "next", "short"} {
+		if err := d.Enqueue(ctx, alice, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The same title queued twice is two things to watch; removing one must
+	// not remove both.
+	if err := d.Dequeue(ctx, "short"); err != nil {
+		t.Fatal(err)
+	}
+	got := queueOf(t, d)
+	if len(got) != 2 || got[0] != "next" || got[1] != "short" {
+		t.Errorf("queue = %v, want [next short]", got)
+	}
+
+	if err := d.Dequeue(ctx, "film"); !errors.Is(err, ErrNotQueued) {
+		t.Errorf("dequeuing the playing title = %v, want ErrNotQueued", err)
+	}
+	if err := d.Dequeue(ctx, "nope"); !errors.Is(err, ErrNotQueued) {
+		t.Errorf("dequeuing something absent = %v, want ErrNotQueued", err)
+	}
+}
+
+func TestReorderAndDequeueBroadcast(t *testing.T) {
+	d, c := newDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, alice, "film"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Enqueue(ctx, alice, "short"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Enqueue(ctx, alice, "next"); err != nil {
+		t.Fatal(err)
+	}
+	before := len(c.topics())
+	if err := d.Reorder(ctx, []string{"next", "short"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Dequeue(ctx, "next"); err != nil {
+		t.Fatal(err)
+	}
+	if after := len(c.topics()); after < before+2 {
+		t.Errorf("%d broadcasts for two queue edits; other clients would not see them", after-before)
 	}
 }

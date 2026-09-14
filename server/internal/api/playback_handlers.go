@@ -19,13 +19,18 @@ import (
 )
 
 type playbackCommand struct {
-	// Action is one of: load, enqueue, play, pause, toggle, seek, stop, start.
+	// Action is one of: load, enqueue, play, pause, toggle, seek, stop,
+	// start, reorder, dequeue.
 	Action string `json:"action"`
 	// MediaID for load and enqueue.
 	MediaID string `json:"mediaId,omitempty"`
 	// PosMS for seek; relative when Relative is set.
 	PosMS    int64 `json:"posMs,omitempty"`
 	Relative bool  `json:"relative,omitempty"`
+	// Queue is the whole new order for reorder — the whole thing, so a
+	// client working from a stale view is rejected rather than silently
+	// dropping whatever was queued since it last looked.
+	Queue []string `json:"queue,omitempty"`
 }
 
 // handleGetPlayback returns the room's current playback state, for joining and
@@ -116,6 +121,10 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 		_, err = s.director.Seek(ctx, actor, cmd.PosMS, cmd.Relative)
 	case "stop":
 		s.director.Stop(ctx, actor)
+	case "reorder":
+		err = s.director.Reorder(ctx, cmd.Queue)
+	case "dequeue":
+		err = s.director.Dequeue(ctx, cmd.MediaID)
 	case "start":
 		// The override for waitForEveryone: go now, whoever is still
 		// buffering. Host-only even with anyoneCanPause, because deciding to
@@ -131,6 +140,10 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "no such media")
 		case errors.Is(err, playback.ErrNoMedia):
 			writeError(w, http.StatusConflict, "nothing is loaded")
+		case errors.Is(err, playback.ErrNotAPermutation):
+			writeError(w, http.StatusConflict, "the queue changed; try again")
+		case errors.Is(err, playback.ErrNotQueued):
+			writeError(w, http.StatusNotFound, "that title is not in the queue")
 		default:
 			s.logger.Error("playback command failed", "action", cmd.Action, "err", err)
 			writeError(w, http.StatusInternalServerError, "could not do that")
