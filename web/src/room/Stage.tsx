@@ -9,7 +9,7 @@ import { MovieVideo } from './MovieVideo';
 import { BufferingGlyph, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerBar } from './ViewerBar';
-import { HostedMovie } from '@/movie/HostedMovie';
+import { HostedMovie, type HostedStatus } from '@/movie/HostedMovie';
 import { usePlayback } from '@/movie/usePlayback';
 import { useTransport } from '@/movie/useTransport';
 import { useAutoHide } from './hooks';
@@ -50,6 +50,10 @@ export function Stage({
 
   const [stalled, setStalled] = useState(false);
   const onStalled = useCallback((v: boolean) => setStalled(v), []);
+  // Stable, because HostedMovie's control loop lists it as a dependency: an
+  // inline lambda here tore the 250 ms interval down and rebuilt it on every
+  // render of this component.
+  const onHostedStatus = useCallback((st: HostedStatus) => setStalled(st.buffering), []);
   const stageRef = useRef<HTMLDivElement>(null);
   const hasMovie = hosted || !!movie.video;
   // Nothing to obscure without a picture, so keep the bar (and its "Open…") up.
@@ -157,7 +161,7 @@ export function Stage({
           state={playback.state}
           offsetMs={playback.offsetMs}
           videoRef={videoRef}
-          onStatus={(st) => setStalled(st.buffering)}
+          onStatus={onHostedStatus}
         />
       ) : (
         <MovieVideo track={movie.video} paused={paused} onStalled={onStalled} videoRef={videoRef} />

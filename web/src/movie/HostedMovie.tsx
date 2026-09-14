@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { PlaybackState } from '@/proto/messages';
 import { bufferedAheadMs, decide, initialSyncState, type SyncState } from './sync';
 import { clientNowMs, targetMs } from './clock';
+import { useSyncStats, type Correction } from './syncStats';
 
 /**
  * The server-hosted player: a plain <video> over an HTTPS file, kept on the
@@ -50,6 +51,12 @@ export function HostedMovie({
   const [buffering, setBuffering] = useState(true);
   const stalled = useRef(false);
   const waitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCorrection = useRef<Correction | null>(null);
+
+  // The stats block belongs to the hosted player, so it goes when the player
+  // does — otherwise the last sample would sit there over a live RTP picture
+  // looking current.
+  useEffect(() => () => useSyncStats.getState().clear(), []);
 
   // Point the element at the file. Guarded on the URL so that a re-render, a
   // pause, or a new broadcast never reassigns src — which would throw away
@@ -114,6 +121,7 @@ export function HostedMovie({
     if (!el || !state.url) return;
 
     const id = setInterval(() => {
+      const now = clientNowMs();
       const target = targetMs(anchorOf(state), offsetMs);
       const targetSec = target / 1000;
       const ahead = bufferedAheadMs(el.buffered, el.currentTime);
@@ -127,10 +135,17 @@ export function HostedMovie({
 
       const errorMs = el.currentTime * 1000 - target;
       const { action, state: nextSync } = decide(
-        { errorMs, now: clientNowMs(), busy, gen: state.gen, bufferedAheadMs: ahead, paused: state.paused },
+        { errorMs, now, busy, gen: state.gen, bufferedAheadMs: ahead, paused: state.paused },
         sync.current,
       );
       sync.current = nextSync;
+      if (action.kind !== 'none') {
+        lastCorrection.current = {
+          kind: action.kind,
+          reason: action.kind === 'seek' ? action.reason : formatNudge(action.rate),
+          at: now,
+        };
+      }
 
       if (action.kind === 'seek') el.currentTime = targetSec;
       if (el.playbackRate !== action.rate) el.playbackRate = action.rate;
@@ -143,6 +158,16 @@ export function HostedMovie({
         void el.play().catch(() => undefined);
       }
 
+      useSyncStats.getState().report({
+        errorMs,
+        bufferedAheadMs: ahead,
+        buffering: gated,
+        rate: action.rate,
+        gen: state.gen,
+        offsetMs,
+        lastCorrection: lastCorrection.current,
+        at: now,
+      });
       onStatus?.({ errorMs, bufferedAheadMs: ahead, buffering: gated, rate: action.rate });
     }, TICK_MS);
     return () => clearInterval(id);
@@ -161,6 +186,12 @@ export function HostedMovie({
       style={{ visibility: state.url ? 'visible' : 'hidden' }}
     />
   );
+}
+
+/** A rate nudge reads better as the percentage it is than as 1.0187. */
+function formatNudge(rate: number): string {
+  const pct = (rate - 1) * 100;
+  return `${pct > 0 ? '+' : pct < 0 ? '−' : ''}${Math.abs(pct).toFixed(1)}%`;
 }
 
 function anchorOf(s: PlaybackState) {

@@ -1,7 +1,18 @@
 import type { RemoteAudioTrack, RemoteVideoTrack } from 'livekit-client';
 import { useEffect, useState } from 'react';
 import { useMpvStore } from '@/host/useMpv';
+import { cn } from '@/lib/cn';
 import { formatBitrate } from '@/lib/format';
+import { clientNowMs } from '@/movie/clock';
+import {
+  driftTone,
+  formatAhead,
+  formatCorrection,
+  formatDrift,
+  formatRate,
+  useSyncStats,
+  type Tone,
+} from '@/movie/syncStats';
 import type { MovieTracks } from './useMovieTracks';
 
 interface Sample {
@@ -81,6 +92,7 @@ async function readStats(track: RemoteVideoTrack | RemoteAudioTrack | null, prev
 /** Developer-ish overlay: WebRTC receive stats for the movie plus the projector's encoder state. */
 export function StatsOverlay({ movie }: { movie: MovieTracks }) {
   const mpv = useMpvStore((s) => s.state);
+  const sync = useSyncStats((s) => s.stats);
   const [v, setV] = useState<VideoStats | null>(null);
   const [a, setA] = useState<AudioStats | null>(null);
 
@@ -110,6 +122,19 @@ export function StatsOverlay({ movie }: { movie: MovieTracks }) {
 
   return (
     <div className="pointer-events-none absolute top-3 left-3 z-20 glass-strong rounded-xl px-3 py-2 font-mono text-[11px] leading-[1.5] text-white/90 min-w-[210px]">
+      {sync && (
+        <>
+          <div className="text-white/40 uppercase tracking-wide text-[10px]">hosted sync</div>
+          {/* Drift is the one number worth colouring: it is the whole point of
+              the control loop, and the thresholds are the loop's own. */}
+          <Row k="drift" v={formatDrift(sync.errorMs)} tone={driftTone(sync.errorMs)} />
+          <Row k="ahead" v={`${formatAhead(sync.bufferedAheadMs)}${sync.buffering ? ' · gated' : ''}`} tone={sync.buffering ? 'warn' : undefined} />
+          <Row k="rate" v={formatRate(sync.rate)} />
+          <Row k="gen/offset" v={`${sync.gen} · ${formatDrift(sync.offsetMs)}`} />
+          <Row k="last fix" v={formatCorrection(sync.lastCorrection, clientNowMs())} />
+          <div className="h-px bg-white/15 my-1" />
+        </>
+      )}
       <Row k="video" v={v ? `${v.width}×${v.height} ${v.fps.toFixed(0)}fps ${v.codec}` : '—'} />
       <Row k="bitrate" v={v ? formatBitrate(v.bitrateKbps) : '—'} />
       <Row k="jitter/loss" v={v ? `${v.jitterMs.toFixed(0)} ms · ${v.lossPct.toFixed(1)} %` : '—'} />
@@ -123,11 +148,17 @@ export function StatsOverlay({ movie }: { movie: MovieTracks }) {
   );
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+const TONES: Record<Tone, string> = {
+  ok: 'text-emerald-300',
+  warn: 'text-amber-300',
+  bad: 'text-red-400',
+};
+
+function Row({ k, v, tone }: { k: string; v: string; tone?: Tone }) {
   return (
     <div className="flex justify-between gap-3">
       <span className="text-white/50">{k}</span>
-      <span className="tabular-nums">{v}</span>
+      <span className={cn('tabular-nums', tone && TONES[tone])}>{v}</span>
     </div>
   );
 }
