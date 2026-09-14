@@ -11,6 +11,10 @@ import (
 	"github.com/ShadowElf37/VideoStream/server/internal/media"
 )
 
+// alice is whoever pressed the button in these tests; the actor only matters
+// to the intent echo, which has its own tests.
+var alice = proto.PlaybackActor{Identity: "u_alice", Name: "Alice", Color: "#8ab4f8"}
+
 type stubResolver struct{ durations map[string]int64 }
 
 func (s stubResolver) Resolve(id string) (int64, string, string, error) {
@@ -24,20 +28,55 @@ func (s stubResolver) Resolve(id string) (int64, string, string, error) {
 type capture struct {
 	mu     sync.Mutex
 	states []proto.PlaybackState
+	ints   []proto.PlaybackIntent
+	order  []string
 }
 
 func (c *capture) Broadcast(_ context.Context, topic string, payload []byte) error {
-	if topic != proto.TopicPlayback {
-		return nil
-	}
-	var st proto.PlaybackState
-	if err := json.Unmarshal(payload, &st); err != nil {
-		return err
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.states = append(c.states, st)
+	switch topic {
+	case proto.TopicPlayback:
+		var st proto.PlaybackState
+		if err := json.Unmarshal(payload, &st); err != nil {
+			return err
+		}
+		c.states = append(c.states, st)
+	case proto.TopicPlaybackIntent:
+		var in proto.PlaybackIntent
+		if err := json.Unmarshal(payload, &in); err != nil {
+			return err
+		}
+		c.ints = append(c.ints, in)
+	default:
+		return nil
+	}
+	c.order = append(c.order, topic)
 	return nil
+}
+
+// topics records the order broadcasts went out in, which is the whole
+// contract for the intent echo: a client that learned the new position first
+// would have jumped before being told why.
+func (c *capture) topics() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.order...)
+}
+
+func (c *capture) intents() []proto.PlaybackIntent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]proto.PlaybackIntent(nil), c.ints...)
+}
+
+func (c *capture) lastIntent(t *testing.T) proto.PlaybackIntent {
+	t.Helper()
+	ins := c.intents()
+	if len(ins) == 0 {
+		t.Fatal("nothing was echoed on playback.intent")
+	}
+	return ins[len(ins)-1]
 }
 
 func (c *capture) last() (proto.PlaybackState, bool) {
@@ -63,7 +102,7 @@ func newDirector(t *testing.T) (*Director, *capture) {
 func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -81,7 +120,7 @@ func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 		t.Errorf("position did not advance while playing: %d", advanced)
 	}
 
-	if err := d.SetPaused(ctx, true); err != nil {
+	if err := d.SetPaused(ctx, alice, true); err != nil {
 		t.Fatal(err)
 	}
 	frozen := d.Snapshot().PosMS
@@ -92,7 +131,7 @@ func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 
 	// Resuming must continue from where it stopped, not from where the clock
 	// would have carried it.
-	if err := d.SetPaused(ctx, false); err != nil {
+	if err := d.SetPaused(ctx, alice, false); err != nil {
 		t.Fatal(err)
 	}
 	if resumed := d.Snapshot().PosMS; resumed < frozen || resumed > frozen+200 {
@@ -105,7 +144,7 @@ func TestAnchorAdvancesOnlyWhilePlaying(t *testing.T) {
 func TestGenerationChangesOnEveryDiscontinuity(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -114,12 +153,12 @@ func TestGenerationChangesOnEveryDiscontinuity(t *testing.T) {
 		name string
 		do   func()
 	}{
-		{"pause", func() { _ = d.SetPaused(ctx, true) }},
-		{"resume", func() { _ = d.SetPaused(ctx, false) }},
-		{"seek", func() { _, _ = d.Seek(ctx, 30_000, false) }},
-		{"relative seek", func() { _, _ = d.Seek(ctx, -10_000, true) }},
-		{"toggle", func() { _, _ = d.TogglePause(ctx) }},
-		{"stop", func() { d.Stop(ctx) }},
+		{"pause", func() { _ = d.SetPaused(ctx, alice, true) }},
+		{"resume", func() { _ = d.SetPaused(ctx, alice, false) }},
+		{"seek", func() { _, _ = d.Seek(ctx, alice, 30_000, false) }},
+		{"relative seek", func() { _, _ = d.Seek(ctx, alice, -10_000, true) }},
+		{"toggle", func() { _, _ = d.TogglePause(ctx, alice) }},
+		{"stop", func() { d.Stop(ctx, alice) }},
 	}
 	for _, s := range steps {
 		s.do()
@@ -134,11 +173,11 @@ func TestGenerationChangesOnEveryDiscontinuity(t *testing.T) {
 func TestSeek(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 
-	landed, err := d.Seek(ctx, 120_000, false)
+	landed, err := d.Seek(ctx, alice, 120_000, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +185,7 @@ func TestSeek(t *testing.T) {
 		t.Errorf("absolute seek landed at %d, want 120000", landed)
 	}
 
-	if landed, err = d.Seek(ctx, -20_000, true); err != nil {
+	if landed, err = d.Seek(ctx, alice, -20_000, true); err != nil {
 		t.Fatal(err)
 	}
 	if landed < 99_000 || landed > 101_000 {
@@ -155,7 +194,7 @@ func TestSeek(t *testing.T) {
 
 	// Seeking before the start clamps rather than going negative, which would
 	// put every client's target in the past.
-	if landed, err = d.Seek(ctx, -999_000, true); err != nil {
+	if landed, err = d.Seek(ctx, alice, -999_000, true); err != nil {
 		t.Fatal(err)
 	}
 	if landed != 0 {
@@ -163,7 +202,7 @@ func TestSeek(t *testing.T) {
 	}
 
 	// And past the end clamps to the duration.
-	if landed, err = d.Seek(ctx, 99_999_999, false); err != nil {
+	if landed, err = d.Seek(ctx, alice, 99_999_999, false); err != nil {
 		t.Fatal(err)
 	}
 	if landed != 7_200_000 {
@@ -174,13 +213,13 @@ func TestSeek(t *testing.T) {
 func TestTransportNeedsMedia(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.SetPaused(ctx, true); err == nil {
+	if err := d.SetPaused(ctx, alice, true); err == nil {
 		t.Error("pausing an idle room was accepted")
 	}
-	if _, err := d.Seek(ctx, 1000, false); err == nil {
+	if _, err := d.Seek(ctx, alice, 1000, false); err == nil {
 		t.Error("seeking an idle room was accepted")
 	}
-	if err := d.Load(ctx, "missing"); err == nil {
+	if err := d.Load(ctx, alice, "missing"); err == nil {
 		t.Error("loading a title that does not exist was accepted")
 	}
 }
@@ -191,7 +230,7 @@ func TestEnqueueAndAdvance(t *testing.T) {
 
 	// Enqueuing into an idle room starts it, rather than queueing behind
 	// nothing.
-	if err := d.Enqueue(ctx, "short"); err != nil {
+	if err := d.Enqueue(ctx, alice, "short"); err != nil {
 		t.Fatal(err)
 	}
 	if st := d.Snapshot(); st.MediaID != "short" || st.Idle {
@@ -199,7 +238,7 @@ func TestEnqueueAndAdvance(t *testing.T) {
 	}
 
 	// A second one queues behind it instead of interrupting.
-	if err := d.Enqueue(ctx, "next"); err != nil {
+	if err := d.Enqueue(ctx, alice, "next"); err != nil {
 		t.Fatal(err)
 	}
 	st := d.Snapshot()
@@ -243,7 +282,7 @@ func TestEnqueueAndAdvance(t *testing.T) {
 func TestEndWithEmptyQueueHolds(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "short"); err != nil {
+	if err := d.Load(ctx, alice, "short"); err != nil {
 		t.Fatal(err)
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
@@ -272,12 +311,12 @@ func TestEndWithEmptyQueueHolds(t *testing.T) {
 func TestEveryCommandBroadcasts(t *testing.T) {
 	d, c := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	before := len(c.states)
-	_ = d.SetPaused(ctx, true)
-	_, _ = d.Seek(ctx, 1000, false)
+	_ = d.SetPaused(ctx, alice, true)
+	_, _ = d.Seek(ctx, alice, 1000, false)
 	if len(c.states) < before+2 {
 		t.Errorf("%d broadcasts for 2 commands; clients would not hear about them",
 			len(c.states)-before)
@@ -296,20 +335,20 @@ func TestEveryCommandBroadcasts(t *testing.T) {
 func TestPlayAtEndRestarts(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Seek(ctx, 7_200_000, false); err != nil {
+	if _, err := d.Seek(ctx, alice, 7_200_000, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetPaused(ctx, true); err != nil {
+	if err := d.SetPaused(ctx, alice, true); err != nil {
 		t.Fatal(err)
 	}
 	if st := d.Snapshot(); st.PosMS != st.DurationMS {
 		t.Fatalf("setup: expected to be parked at the end, got %d", st.PosMS)
 	}
 
-	if err := d.SetPaused(ctx, false); err != nil {
+	if err := d.SetPaused(ctx, alice, false); err != nil {
 		t.Fatal(err)
 	}
 	st := d.Snapshot()
@@ -324,16 +363,16 @@ func TestPlayAtEndRestarts(t *testing.T) {
 func TestTogglePlayAtEndRestarts(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.Seek(ctx, 7_200_000, false); err != nil {
+	if _, err := d.Seek(ctx, alice, 7_200_000, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.TogglePause(ctx); err != nil { // -> paused at end
+	if _, err := d.TogglePause(ctx, alice); err != nil { // -> paused at end
 		t.Fatal(err)
 	}
-	if _, err := d.TogglePause(ctx); err != nil { // -> play
+	if _, err := d.TogglePause(ctx, alice); err != nil { // -> play
 		t.Fatal(err)
 	}
 	if st := d.Snapshot(); st.PosMS > 1000 {
@@ -381,7 +420,7 @@ func pastGrace(d *Director, clk *fakeClock) {
 func TestHoldOnLoadUntilEveryoneIsReady(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -436,7 +475,7 @@ func TestHoldOnLoadUntilEveryoneIsReady(t *testing.T) {
 func TestStaleGenerationReportsDoNotRelease(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	gen := d.Snapshot().Gen
@@ -448,7 +487,7 @@ func TestStaleGenerationReportsDoNotRelease(t *testing.T) {
 
 	// Now seek while playing: a new hold, at a new generation, and Alice's
 	// old "I am ready" must not satisfy it.
-	if _, err := d.Seek(ctx, 600_000, false); err != nil {
+	if _, err := d.Seek(ctx, alice, 600_000, false); err != nil {
 		t.Fatal(err)
 	}
 	st := d.Snapshot()
@@ -472,7 +511,7 @@ func TestStaleGenerationReportsDoNotRelease(t *testing.T) {
 func TestHoldTimesOut(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	gen := d.Snapshot().Gen
@@ -503,7 +542,7 @@ func TestHoldTimesOut(t *testing.T) {
 func TestStaleReportsAreNotWaitedFor(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	gen := d.Snapshot().Gen
@@ -525,7 +564,7 @@ func TestStaleReportsAreNotWaitedFor(t *testing.T) {
 func TestSilentRoomStartsAfterTheGrace(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	d.Tick(ctx)
@@ -542,7 +581,7 @@ func TestSilentRoomStartsAfterTheGrace(t *testing.T) {
 func TestStartOverridesTheHold(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	d.Report(ctx, "slow", "Carol", notReady(d.Snapshot().Gen))
@@ -563,7 +602,7 @@ func TestStartOverridesTheHold(t *testing.T) {
 func TestTurningTheSettingOffReleases(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	d.Report(ctx, "slow", "Carol", notReady(d.Snapshot().Gen))
@@ -582,19 +621,19 @@ func TestTurningTheSettingOffReleases(t *testing.T) {
 func TestPauseAndPausedSeekDoNotHold(t *testing.T) {
 	d, _, clk := newHoldingDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	d.Report(ctx, "a", "Alice", ready(d.Snapshot().Gen))
 	pastGrace(d, clk)
 
-	if err := d.SetPaused(ctx, true); err != nil {
+	if err := d.SetPaused(ctx, alice, true); err != nil {
 		t.Fatal(err)
 	}
 	if st := d.Snapshot(); st.Holding {
 		t.Error("pausing entered a hold")
 	}
-	if _, err := d.Seek(ctx, 120_000, false); err != nil {
+	if _, err := d.Seek(ctx, alice, 120_000, false); err != nil {
 		t.Fatal(err)
 	}
 	st := d.Snapshot()
@@ -606,13 +645,13 @@ func TestPauseAndPausedSeekDoNotHold(t *testing.T) {
 	}
 
 	// Resuming does hold, and toggling out of a hold pauses rather than plays.
-	if err := d.SetPaused(ctx, false); err != nil {
+	if err := d.SetPaused(ctx, alice, false); err != nil {
 		t.Fatal(err)
 	}
 	if !d.Snapshot().Holding {
 		t.Fatal("resuming did not hold")
 	}
-	paused, err := d.TogglePause(ctx)
+	paused, err := d.TogglePause(ctx, alice)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -628,11 +667,162 @@ func TestPauseAndPausedSeekDoNotHold(t *testing.T) {
 func TestNoHoldWhenTheSettingIsOff(t *testing.T) {
 	d, _ := newDirector(t)
 	ctx := context.Background()
-	if err := d.Load(ctx, "film"); err != nil {
+	if err := d.Load(ctx, alice, "film"); err != nil {
 		t.Fatal(err)
 	}
 	st := d.Snapshot()
 	if st.Holding || st.Paused {
 		t.Errorf("held with waitForEveryone off: %+v", st)
+	}
+}
+
+// The intent echo ----------------------------------------------------------
+
+// The order is the contract. A client that got the state first would have
+// jumped to the new position before being told whose doing it was.
+func TestIntentIsBroadcastBeforeTheState(t *testing.T) {
+	d, c, _ := newHoldingDirector(t)
+	d.SetWaitForEveryone(context.Background(), false)
+	ctx := context.Background()
+	if err := d.Load(ctx, alice, "film"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Seek(ctx, alice, 600_000, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetPaused(ctx, alice, true); err != nil {
+		t.Fatal(err)
+	}
+
+	got := c.topics()
+	want := []string{
+		proto.TopicPlaybackIntent, proto.TopicPlayback, // load
+		proto.TopicPlaybackIntent, proto.TopicPlayback, // seek
+		proto.TopicPlaybackIntent, proto.TopicPlayback, // pause
+	}
+	if len(got) != len(want) {
+		t.Fatalf("broadcast topics = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("broadcast topics = %v, want %v", got, want)
+		}
+	}
+
+	// Sequence numbers so a client can drop an echo that overtook a newer one.
+	ins := c.intents()
+	for i := 1; i < len(ins); i++ {
+		if ins[i].Seq <= ins[i-1].Seq {
+			t.Fatalf("intent seq did not increase: %d then %d", ins[i-1].Seq, ins[i].Seq)
+		}
+	}
+}
+
+func TestIntentContents(t *testing.T) {
+	d, c, clk := newHoldingDirector(t)
+	d.SetWaitForEveryone(context.Background(), false)
+	ctx := context.Background()
+
+	if err := d.Load(ctx, alice, "film"); err != nil {
+		t.Fatal(err)
+	}
+	in := c.lastIntent(t)
+	if in.Action != proto.IntentLoad {
+		t.Errorf("action = %q, want load", in.Action)
+	}
+	if in.MediaID != "film" || in.Title != "Title film" {
+		t.Errorf("load intent did not name the film: %+v", in)
+	}
+	if in.Actor.Name != "Alice" || in.Actor.Color != alice.Color {
+		t.Errorf("actor = %+v, want Alice", in.Actor)
+	}
+	if in.TS != clk.ms {
+		t.Errorf("ts = %d, want the director's clock %d", in.TS, clk.ms)
+	}
+
+	// A seek carries where the room was as well as where it is going: that
+	// difference is what decides a corner chip from a centred glyph.
+	clk.advance(10_000)
+	if _, err := d.Seek(ctx, alice, 3_600_000, false); err != nil {
+		t.Fatal(err)
+	}
+	in = c.lastIntent(t)
+	if in.Action != proto.IntentSeek {
+		t.Errorf("action = %q, want seek", in.Action)
+	}
+	if in.FromMS < 9_000 || in.FromMS > 11_000 {
+		t.Errorf("fromMs = %d, want about 10000 — the position before the seek", in.FromMS)
+	}
+	if in.ToMS != 3_600_000 {
+		t.Errorf("toMs = %d, want 3600000", in.ToMS)
+	}
+
+	// Pause and play are distinct actions, not a flag on one.
+	if err := d.SetPaused(ctx, alice, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.lastIntent(t).Action; got != proto.IntentPause {
+		t.Errorf("action = %q, want pause", got)
+	}
+	if _, err := d.TogglePause(ctx, alice); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.lastIntent(t).Action; got != proto.IntentPlay {
+		t.Errorf("toggling out of pause echoed %q, want play", got)
+	}
+	d.Stop(ctx, alice)
+	if got := c.lastIntent(t).Action; got != proto.IntentStop {
+		t.Errorf("action = %q, want stop", got)
+	}
+}
+
+// A late joiner gets the echo in the state, because the loading card for the
+// film the room is in the middle of starting is exactly what they need.
+func TestLastIntentTravelsInTheState(t *testing.T) {
+	d, _, _ := newHoldingDirector(t)
+	d.SetWaitForEveryone(context.Background(), false)
+	ctx := context.Background()
+	if st := d.Snapshot(); st.LastIntent != nil {
+		t.Fatalf("an untouched room has a lastIntent: %+v", st.LastIntent)
+	}
+	if err := d.Load(ctx, alice, "film"); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Snapshot()
+	if st.LastIntent == nil {
+		t.Fatal("lastIntent missing from the state after a load")
+	}
+	if st.LastIntent.MediaID != "film" || st.LastIntent.Actor.Name != "Alice" {
+		t.Errorf("lastIntent = %+v", st.LastIntent)
+	}
+}
+
+// The playlist advancing is the server's doing and names nobody.
+func TestAdvanceEchoesWithNoActor(t *testing.T) {
+	d, c := newDirector(t)
+	ctx := context.Background()
+	if err := d.Enqueue(ctx, alice, "short"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Enqueue(ctx, alice, "next"); err != nil {
+		t.Fatal(err)
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go d.Run(loopCtx)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if d.Snapshot().MediaID == "next" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	in := c.lastIntent(t)
+	if in.Action != proto.IntentLoad || in.MediaID != "next" {
+		t.Fatalf("advancing did not echo a load of the next title: %+v", in)
+	}
+	if in.Actor.Name != "" || in.Actor.Identity != "" {
+		t.Errorf("the playlist advancing named an actor: %+v", in.Actor)
 	}
 }

@@ -17,6 +17,9 @@ const (
 	TopicMpvReply = "mpv.reply"
 	TopicMpvState = "mpv.state"
 	TopicPlayback = "playback"
+	// TopicPlaybackIntent echoes who did what the moment a command lands,
+	// ahead of the state it produces.
+	TopicPlaybackIntent = "playback.intent"
 	TopicMpvEvent = "mpv.event"
 )
 
@@ -262,6 +265,52 @@ type PlaybackState struct {
 	Holding bool `json:"holding"`
 	// WaitingFor names the people still buffering, for the card that says so.
 	WaitingFor []string `json:"waitingFor,omitempty"`
+
+	// LastIntent is the most recent echo, for someone who joined after it
+	// was broadcast — a late joiner still wants the loading card for the
+	// film the room is in the middle of starting.
+	LastIntent *PlaybackIntent `json:"lastIntent,omitempty"`
+}
+
+// Playback intent actions.
+const (
+	IntentSeek  = "seek"
+	IntentPause = "pause"
+	IntentPlay  = "play"
+	IntentLoad  = "load"
+	IntentStop  = "stop"
+)
+
+// PlaybackActor is who asked for something. The zero value is the server
+// itself — the run loop advancing a playlist — which is why the name is
+// allowed to be empty.
+type PlaybackActor struct {
+	Identity string `json:"identity"`
+	Name     string `json:"name"`
+	Color    string `json:"color"`
+}
+
+// PlaybackIntent is the echo: what a person just asked for, sent the moment
+// the command lands rather than when its effects settle.
+//
+// The state broadcast alone cannot carry this. It says where the film is, not
+// who moved it or where it was a moment ago, and by the time a client has
+// applied it the picture has already jumped. Pause got a loud red indicator
+// early; seeks got nothing, so a viewer saw the picture jump with no idea who
+// did it or why.
+type PlaybackIntent struct {
+	Seq    int64         `json:"seq"`
+	Action string        `json:"action"` // seek | pause | play | load | stop
+	Actor  PlaybackActor `json:"actor"`
+	// FromMS is where the room was; ToMS where it is going. Equal for a
+	// pause or a play, which is how a seek's size is told from a nudge.
+	FromMS int64 `json:"fromMs"`
+	ToMS   int64 `json:"toMs"`
+	// Title and MediaID are set for a load, so the card can name the film
+	// before anyone has fetched a byte of it.
+	Title   string `json:"title,omitempty"`
+	MediaID string `json:"mediaId,omitempty"`
+	TS      int64  `json:"ts"`
 }
 
 // PlaybackReady is a client telling the director whether it could start now.

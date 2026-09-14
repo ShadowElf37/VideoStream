@@ -150,6 +150,11 @@ type Director struct {
 	// seq is a broadcast counter, so a client can drop a packet that
 	// overtook a newer one.
 	seq int64
+
+	// lastIntent is the most recent echo, carried in the state so a late
+	// joiner still gets the loading card for the film being started.
+	lastIntent *proto.PlaybackIntent
+	intentSeq  int64
 }
 
 // New creates a director on the real clock.
@@ -243,6 +248,7 @@ func (d *Director) snapshotLocked() proto.PlaybackState {
 	if r.holding {
 		st.WaitingFor = d.waitingForLocked()
 	}
+	st.LastIntent = d.lastIntent
 	if r.mediaID == "" {
 		st.Idle = true
 	}
@@ -259,12 +265,12 @@ func (d *Director) nextSeq() int64 {
 }
 
 // Load starts a title, discarding the queue.
-func (d *Director) Load(ctx context.Context, mediaID string) error {
-	return d.load(ctx, mediaID, true)
+func (d *Director) Load(ctx context.Context, actor proto.PlaybackActor, mediaID string) error {
+	return d.load(ctx, actor, mediaID, true)
 }
 
 // Enqueue adds a title behind whatever is playing, or starts it if nothing is.
-func (d *Director) Enqueue(ctx context.Context, mediaID string) error {
+func (d *Director) Enqueue(ctx context.Context, actor proto.PlaybackActor, mediaID string) error {
 	if _, _, _, err := d.resolver.Resolve(mediaID); err != nil {
 		return err
 	}
@@ -276,13 +282,13 @@ func (d *Director) Enqueue(ctx context.Context, mediaID string) error {
 	}
 	d.mu.Unlock()
 	if idle {
-		return d.load(ctx, mediaID, false)
+		return d.load(ctx, actor, mediaID, false)
 	}
 	d.Publish(ctx)
 	return nil
 }
 
-func (d *Director) load(ctx context.Context, mediaID string, clearQueue bool) error {
+func (d *Director) load(ctx context.Context, actor proto.PlaybackActor, mediaID string, clearQueue bool) error {
 	duration, title, url, err := d.resolver.Resolve(mediaID)
 	if err != nil {
 		return err
@@ -300,19 +306,21 @@ func (d *Director) load(ctx context.Context, mediaID string, clearQueue bool) er
 	}
 	d.armHold(r)
 	d.reanchor(r, 0)
+	in := d.intentLocked(proto.IntentLoad, actor, 0, 0)
 	d.mu.Unlock()
-	d.Publish(ctx)
+	d.announce(ctx, in)
 	return nil
 }
 
 // SetPaused pauses or resumes, pinning the position at the moment it changed.
-func (d *Director) SetPaused(ctx context.Context, paused bool) error {
+func (d *Director) SetPaused(ctx context.Context, actor proto.PlaybackActor, paused bool) error {
 	d.mu.Lock()
 	r := d.room
 	if r.mediaID == "" {
 		d.mu.Unlock()
 		return ErrNoMedia
 	}
+	was := d.posMS(r)
 	// Holding counts as paused to the outside world, so "resume" while held
 	// must still be a change — that is what re-arms the hold at a fresh
 	// position rather than silently doing nothing.
@@ -335,20 +343,30 @@ func (d *Director) SetPaused(ctx context.Context, paused bool) error {
 		}
 		d.reanchor(r, pos)
 	}
+	in := d.intentLocked(pauseAction(paused), actor, was, d.posMS(r))
 	d.mu.Unlock()
-	d.Publish(ctx)
+	d.announce(ctx, in)
 	return nil
 }
 
+// pauseAction names the echo for a pause or a resume.
+func pauseAction(paused bool) string {
+	if paused {
+		return proto.IntentPause
+	}
+	return proto.IntentPlay
+}
+
 // TogglePause flips the pause state and reports the new value.
-func (d *Director) TogglePause(ctx context.Context) (bool, error) {
+func (d *Director) TogglePause(ctx context.Context, actor proto.PlaybackActor) (bool, error) {
 	d.mu.Lock()
 	r := d.room
 	if r.mediaID == "" {
 		d.mu.Unlock()
 		return false, ErrNoMedia
 	}
-	pos := d.posMS(r)
+	was := d.posMS(r)
+	pos := was
 	// Toggling a held room cancels the wait rather than overriding it: the
 	// picture is already still, so the button under the host's finger reads
 	// as pause, and "Start anyway" is the separate thing that starts it.
@@ -363,22 +381,24 @@ func (d *Director) TogglePause(ctx context.Context) (bool, error) {
 		d.armHold(r)
 	}
 	d.reanchor(r, pos)
+	in := d.intentLocked(pauseAction(paused), actor, was, d.posMS(r))
 	d.mu.Unlock()
-	d.Publish(ctx)
+	d.announce(ctx, in)
 	return paused, nil
 }
 
 // Seek moves to an absolute position, or by a delta when relative.
-func (d *Director) Seek(ctx context.Context, ms int64, relative bool) (int64, error) {
+func (d *Director) Seek(ctx context.Context, actor proto.PlaybackActor, ms int64, relative bool) (int64, error) {
 	d.mu.Lock()
 	r := d.room
 	if r.mediaID == "" {
 		d.mu.Unlock()
 		return 0, ErrNoMedia
 	}
+	was := d.posMS(r)
 	target := ms
 	if relative {
-		target = d.posMS(r) + ms
+		target = was + ms
 	}
 	// A seek only starts anything if the room was playing, so only then is
 	// there a start to wait for. Scrubbing around while paused must not put
@@ -388,15 +408,17 @@ func (d *Director) Seek(ctx context.Context, ms int64, relative bool) (int64, er
 	}
 	d.reanchor(r, target)
 	landed := r.anchorPosMS
+	in := d.intentLocked(proto.IntentSeek, actor, was, landed)
 	d.mu.Unlock()
-	d.Publish(ctx)
+	d.announce(ctx, in)
 	return landed, nil
 }
 
 // Stop unloads, leaving the room idle.
-func (d *Director) Stop(ctx context.Context) {
+func (d *Director) Stop(ctx context.Context, actor proto.PlaybackActor) {
 	d.mu.Lock()
 	r := d.room
+	was := d.posMS(r)
 	r.mediaID, r.title, r.url = "", "", ""
 	r.durationMS, r.anchorPosMS = 0, 0
 	r.queue = nil
@@ -404,7 +426,47 @@ func (d *Director) Stop(ctx context.Context) {
 	r.holding = false
 	r.gen++
 	r.anchorAtMS = d.clock.NowMS()
+	in := d.intentLocked(proto.IntentStop, actor, was, 0)
 	d.mu.Unlock()
+	d.announce(ctx, in)
+}
+
+// The intent echo
+// ------------------------------------------------------------------------
+//
+// A viewer sees the picture jump and has no idea who did it or why. The state
+// broadcast cannot tell them: it says where the film is, not where it was or
+// whose hand was on the transport, and by the time a client has applied it the
+// jump has already happened. So every command also produces an intent, built
+// while the command is being applied and sent ahead of the state it produces.
+
+// intentLocked records an echo and returns it for broadcasting. Called with
+// the lock held, from inside each command.
+func (d *Director) intentLocked(action string, actor proto.PlaybackActor, fromMS, toMS int64) proto.PlaybackIntent {
+	d.intentSeq++
+	in := proto.PlaybackIntent{
+		Seq:    d.intentSeq,
+		Action: action,
+		Actor:  actor,
+		FromMS: fromMS,
+		ToMS:   toMS,
+		TS:     d.clock.NowMS(),
+	}
+	if action == proto.IntentLoad {
+		in.MediaID, in.Title = d.room.mediaID, d.room.title
+	}
+	d.lastIntent = &in
+	return in
+}
+
+// announce sends the echo, then the state. The order is the point: a client
+// that learned the new position first would have jumped before being told why.
+func (d *Director) announce(ctx context.Context, in proto.PlaybackIntent) {
+	if d.bcast != nil {
+		if payload, err := encodeIntent(in); err == nil {
+			_ = d.bcast.Broadcast(ctx, proto.TopicPlaybackIntent, payload)
+		}
+	}
 	d.Publish(ctx)
 }
 
@@ -675,7 +737,9 @@ func (d *Director) advance(ctx context.Context) {
 	next := r.queue[0]
 	r.queue = r.queue[1:]
 	d.mu.Unlock()
-	if err := d.load(ctx, next, false); err != nil {
+	// No actor: the playlist advancing is the server's doing, and the card
+	// that results says "Now playing" rather than naming anyone.
+	if err := d.load(ctx, proto.PlaybackActor{}, next, false); err != nil {
 		// A queued title that has since been deleted should not wedge the
 		// room; drop it and try the next one on the following tick.
 		d.mu.Lock()

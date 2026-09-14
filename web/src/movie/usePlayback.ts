@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Room } from 'livekit-client';
 import { RoomEvent } from 'livekit-client';
 import { api } from '@/lib/api';
-import { Topics, type PlaybackState } from '@/proto/messages';
+import { Topics, type PlaybackIntent, type PlaybackState } from '@/proto/messages';
+import { useChat } from '@/state/chat';
 import { useSession } from '@/state/session';
 import { addSample, bestOffset, clientNowMs, offsetOf, settle, type ClockSample } from './clock';
+import { intentSystemLine, intentToast, useIntentStore } from './intent';
 import { usePlaybackStore } from './store';
 
 /**
@@ -37,6 +39,17 @@ export interface Playback {
   ready: boolean;
 }
 
+/**
+ * The words that go with an echo: a toast for whoever did not press the
+ * button, and a chat line for the record.
+ */
+function announce(i: PlaybackIntent) {
+  const line = intentSystemLine(i);
+  if (line) useChat.getState().addSystem(line, i.ts);
+  const toast = intentToast(i, useSession.getState().token?.identity);
+  if (toast) useSession.getState().toast(toast, 'info', 2500);
+}
+
 export function usePlayback(room: Room | null, connected: boolean): Playback {
   const [state, setState] = useState<PlaybackState | null>(null);
   const [offsetMs, setOffsetMs] = useState<number | null>(null);
@@ -49,7 +62,13 @@ export function usePlayback(room: Room | null, connected: boolean): Playback {
     if (!session) return;
     void api
       .getPlayback(session)
-      .then(setState)
+      .then((st) => {
+        setState(st);
+        // Not live: this is whatever the room last did, possibly long ago.
+        // Good enough for the loading card, which waits on the local player;
+        // wrong for a chip, which would flash for a seek nobody just made.
+        useIntentStore.getState().receive(st.lastIntent ?? null, false);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -64,11 +83,17 @@ export function usePlayback(room: Room | null, connected: boolean): Playback {
   useEffect(() => {
     if (!room) return;
     const onData = (payload: Uint8Array, _p: unknown, _k: unknown, topic?: string) => {
-      if (topic !== Topics.playback) return;
       try {
-        const next = JSON.parse(decoder.decode(payload)) as PlaybackState;
-        // Drop a packet that overtook a newer one.
-        setState((cur) => (cur && cur.seq > next.seq ? cur : next));
+        if (topic === Topics.playback) {
+          const next = JSON.parse(decoder.decode(payload)) as PlaybackState;
+          // Drop a packet that overtook a newer one.
+          setState((cur) => (cur && cur.seq > next.seq ? cur : next));
+          return;
+        }
+        if (topic === Topics.playbackIntent) {
+          const next = JSON.parse(decoder.decode(payload)) as PlaybackIntent;
+          if (useIntentStore.getState().receive(next, true)) announce(next);
+        }
       } catch {
         /* a malformed packet is not worth tearing anything down for */
       }

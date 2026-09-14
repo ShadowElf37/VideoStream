@@ -178,6 +178,7 @@ export function HostedMovie({
 
       useSyncStats.getState().report({
         errorMs,
+        positionMs: el.currentTime * 1000,
         bufferedAheadMs: ahead,
         buffering: gated,
         rate: action.rate,

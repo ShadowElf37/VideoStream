@@ -26,6 +26,8 @@ export interface Correction {
 export interface SyncStats {
   /** Signed drift in ms; positive means this client is ahead of the room. */
   errorMs: number;
+  /** Where this machine's picture actually is, in ms. */
+  positionMs: number;
   bufferedAheadMs: number;
   /** True while the gate is holding the picture for want of buffer. */
   buffering: boolean;
@@ -89,6 +91,13 @@ export function formatAhead(ms: number): string {
 export function formatRate(rate: number): string {
   return Number.isFinite(rate) ? rate.toFixed(4) : '—';
 }
+
+/**
+ * Past this the seek bar draws "the room is here" separately from "you are
+ * here". It is the same threshold the drift readout calls bad, which is the
+ * point: below it the two marks would sit on top of each other anyway.
+ */
+export const PENDING_MS = DRIFT_BAD_MS;
 
 export function formatCorrection(c: Correction | null, now: number): string {
   if (!c) return 'none';

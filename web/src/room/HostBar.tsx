@@ -17,6 +17,7 @@ import { useMpv, useMpvStore } from '@/host/useMpv';
 import { useNowPlaying } from '@/movie/store';
 import { useTransport } from '@/movie/useTransport';
 import { useBufferedRanges } from '@/movie/useBufferedRanges';
+import { useRoomLag } from '@/movie/useRoomLag';
 import { cn } from '@/lib/cn';
 import { formatDelay, formatTime, trackLabel } from '@/lib/format';
 import type { QualityPreset } from '@/proto/messages';
@@ -68,6 +69,8 @@ export function HostBar({
   const transport = useTransport(now.hosted);
   // Only hosted media has an addressable buffer to draw.
   const buffered = useBufferedRanges(videoRef, now.hosted);
+  // "You are here" versus "the room is here", while the two differ.
+  const lag = useRoomLag(now.hosted);
 
   const send = async (cmd: unknown[], label?: string) => {
     if (label) setBusy(label);
@@ -105,7 +108,15 @@ export function HostBar({
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div className="max-w-[1400px] mx-auto">
-        <SeekBar position={pos} duration={duration} chapters={state?.chapters ?? []} onSeek={(s) => void transport.seek(s * 1000, false)} buffered={buffered} />
+        <SeekBar
+          position={lag.position ?? pos}
+          roomPosition={pos}
+          pending={lag.pending}
+          duration={duration}
+          chapters={state?.chapters ?? []}
+          onSeek={(s) => void transport.seek(s * 1000, false)}
+          buffered={buffered}
+        />
         {/* One scrollable row on phones; wraps into two rows from tablet width up. */}
         <div className="mt-1 flex items-center gap-1 flex-nowrap overflow-x-auto [&>*]:shrink-0 sm:flex-wrap sm:overflow-visible sm:[&>*]:shrink">
           <IconButton label={paused ? 'Play' : 'Pause'} kbd="Space" size="md" disabled={disabled || idle} onClick={() => void transport.togglePause()}>

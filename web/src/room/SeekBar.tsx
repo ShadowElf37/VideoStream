@@ -13,8 +13,11 @@ export function SeekBar({
   chapters,
   onSeek,
   buffered,
+  roomPosition,
+  pending,
   className,
 }: {
+  /** Where this machine's picture is. */
   position: number;
   duration: number;
   chapters: MpvChapter[];
@@ -25,6 +28,14 @@ export function SeekBar({
    * track has no addressable buffer to draw.
    */
   buffered?: Array<[number, number]>;
+  /**
+   * Where the *room* is. Drawn separately while `pending`, because after a
+   * host seek there is a real second or two in which this machine is
+   * somewhere else, and a bar that shows only one of the two positions is
+   * lying about one of them.
+   */
+  roomPosition?: number;
+  pending?: boolean;
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -33,6 +44,11 @@ export function SeekBar({
   const interactive = !!onSeek && duration > 0;
   const shown = drag ?? position;
   const pct = duration > 0 ? clamp(shown / duration, 0, 1) * 100 : 0;
+  // Only worth drawing while the gap is real and the room is not where we are.
+  const roomPct =
+    pending && roomPosition !== undefined && duration > 0 && drag === null
+      ? clamp(roomPosition / duration, 0, 1) * 100
+      : null;
 
   const secondsAt = useCallback(
     (clientX: number) => {
@@ -98,7 +114,18 @@ export function SeekBar({
               }}
             />
           ))}
-        <div className="absolute inset-y-0 left-0 rounded-full bg-accent" style={{ width: `${pct}%` }} />
+        <div className={cn('absolute inset-y-0 left-0 rounded-full bg-accent', roomPct !== null && 'opacity-60')} style={{ width: `${pct}%` }} />
+        {/* The stretch between us and the room, and a hard mark where the room
+            is. Together they read as "catching up to here". */}
+        {roomPct !== null && (
+          <>
+            <div
+              className="absolute inset-y-0 bg-accent/25"
+              style={{ left: `${Math.min(pct, roomPct)}%`, width: `${Math.abs(roomPct - pct)}%` }}
+            />
+            <div className="absolute top-1/2 h-3 w-0.5 -translate-y-1/2 rounded bg-accent" style={{ left: `${roomPct}%` }} />
+          </>
+        )}
         {hover !== null && duration > 0 && (
           <div className="absolute inset-y-0 left-0 rounded-full bg-white/25" style={{ width: `${(hover / duration) * 100}%` }} />
         )}

@@ -73,6 +73,7 @@ proxied by Caddy). Wrong passwords are rate-limited per client address.
 | `presence` | client → all | yes | `PresenceMessage` (sent on join and on change) |
 | `settings` | server → all | yes | `RoomSettings` |
 | `playback` | server → all | no | `PlaybackState` (on every command, plus 1 Hz while something is loaded) |
+| `playback.intent` | server → all | yes | `PlaybackIntent`, sent *before* the state it produces |
 | `mpv.cmd` | host → projector | yes | `MpvCommand` |
 | `mpv.reply` | projector → sender | yes | `MpvReply` |
 | `mpv.state` | projector → all | no | `MpvState` (4 Hz while playing, plus on change) |
@@ -90,6 +91,27 @@ proxied by Caddy). Wrong passwords are rate-limited per client address.
 | `seek` | `{posMs, relative?}` | host |
 | `stop` | — | host |
 | `start` | — | host (overrides a `waitForEveryone` hold) |
+
+## The intent echo
+
+A viewer sees the picture jump and has no idea who did it. `PlaybackState`
+cannot tell them: it says where the film is, not where it was or whose hand was
+on the transport, and by the time a client has applied it the jump has already
+happened.
+
+So every command also emits a `PlaybackIntent` on `playback.intent` — built
+while the command is applied, broadcast **before** the state. The order is the
+contract: a client that learned the new position first would have jumped before
+being told why. `PlaybackState.lastIntent` carries the most recent one for
+whoever joins afterwards.
+
+`fromMs` and `toMs` are the positions before and after (equal for a pause or a
+play), which is what lets the client tell a nudge from a jump: the web app
+draws a ±30 s seek as a corner chip and anything larger as a centred glyph with
+the target time. An empty `actor` is the server itself — the run loop advancing
+a playlist — and the wording stays neutral rather than claiming a person, the
+same way the live mpv path does, since mpv knows the playback changed but not
+who asked.
 
 ## waitForEveryone
 

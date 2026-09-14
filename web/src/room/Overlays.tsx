@@ -1,8 +1,9 @@
 import { useLocalParticipant, useParticipants } from '@livekit/components-react';
 import { ConnectionQuality, type Participant } from 'livekit-client';
-import { Clapperboard, Hourglass, Library as LibraryIcon, Pause, Radio, Wifi, WifiOff } from 'lucide-react';
-import { useEffect } from 'react';
+import { Clapperboard, FastForward, Hourglass, Library as LibraryIcon, Pause, Radio, Rewind, Wifi, WifiOff } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { cn } from '@/lib/cn';
+import { describeIntent, ECHO_MS, useIntentStore } from '@/movie/intent';
 import { colorFor } from '@/lib/colors';
 import { useSession, type Reaction, type Toast } from '@/state/session';
 import { Avatar } from '@/ui/Avatar';
@@ -168,6 +169,84 @@ export function HoldingCard({ names, isHost, onStart }: { names: string[]; isHos
       </div>
     </div>
   );
+}
+
+/**
+ * What the room just did, and who did it.
+ *
+ * Three shapes for three sizes of surprise: a ±10 s tap is a correction and
+ * gets a corner chip; a jump to another part of the film takes the middle of
+ * the screen, because the viewer has lost their place and needs telling where
+ * they are now; a new title gets a card that names the film while the browser
+ * fetches it.
+ *
+ * The first two are only ever shown for an echo that arrived live. A late
+ * joiner is handed the room's last intent in their first state fetch, and
+ * flashing "⏪ 10 s · Alice" for something that happened ten minutes ago would
+ * be a lie. The loading card has no such problem: it is gated on this
+ * machine's own player, so it is right whenever it is up.
+ */
+export function IntentEcho() {
+  const intent = useIntentStore((s) => s.intent);
+  const live = useIntentStore((s) => s.live);
+  const started = useIntentStore((s) => s.started);
+  const [visible, setVisible] = useState(false);
+  const seq = intent?.seq ?? 0;
+
+  useEffect(() => {
+    if (!seq || !live) {
+      setVisible(false);
+      return;
+    }
+    setVisible(true);
+    const t = setTimeout(() => setVisible(false), ECHO_MS);
+    return () => clearTimeout(t);
+  }, [seq, live]);
+
+  const d = describeIntent(intent);
+
+  if (d.kind === 'loading') {
+    if (started) return null;
+    return (
+      <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-4">
+        <div className="anim-pop glass-strong rounded-2xl px-6 py-5 text-center max-w-sm">
+          <div className="mx-auto mb-3 flex size-12 items-center justify-center">
+            <Spinner size={30} />
+          </div>
+          <h2 className="text-base font-semibold tracking-tight break-words">{d.title}</h2>
+          <p className="text-muted mt-1.5 text-sm">{d.who ? `${d.who} picked this` : 'Up next'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!visible) return null;
+
+  if (d.kind === 'chip') {
+    return (
+      <div className="pointer-events-none absolute bottom-24 left-4 z-20">
+        <span className="anim-pop inline-flex items-center rounded-full bg-black/60 px-3 py-1.5 text-[13px] font-medium text-white backdrop-blur-md">
+          {d.text}
+        </span>
+      </div>
+    );
+  }
+
+  if (d.kind === 'glyph') {
+    return (
+      <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/45">
+        <div className="anim-pop flex flex-col items-center gap-2">
+          <div className="flex size-24 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur-md">
+            {d.forward ? <FastForward className="size-11" fill="currentColor" /> : <Rewind className="size-11" fill="currentColor" />}
+          </div>
+          <span className="font-mono text-2xl tabular-nums text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">{d.time}</span>
+          {d.who && <span className="text-sm text-white/80">{d.who}</span>}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 export function BufferingGlyph() {

@@ -13,6 +13,8 @@ export const Topics = {
   mpvReply: 'mpv.reply',
   mpvState: 'mpv.state',
   playback: 'playback',
+  /** Who did what, echoed the moment a command lands. */
+  playbackIntent: 'playback.intent',
   mpvEvent: 'mpv.event',
 } as const;
 export type Topic = (typeof Topics)[keyof typeof Topics];
@@ -241,6 +243,41 @@ export interface PlaybackState {
   holding: boolean;
   /** Who is still buffering, for the card that says so. */
   waitingFor?: string[];
+  /** The most recent echo, for someone who joined after it was broadcast. */
+  lastIntent?: PlaybackIntent;
+}
+
+export type IntentAction = 'seek' | 'pause' | 'play' | 'load' | 'stop';
+
+/**
+ * Who asked for something. Every field may be empty: that is the server
+ * itself, the run loop advancing a playlist.
+ */
+export interface PlaybackActor {
+  identity: string;
+  name: string;
+  color: string;
+}
+
+/**
+ * The echo: what a person just asked for, sent the moment the command lands
+ * rather than when its effects settle.
+ *
+ * The state broadcast alone cannot carry this. It says where the film is, not
+ * who moved it or where it was a moment ago, and by the time a client has
+ * applied it the picture has already jumped.
+ */
+export interface PlaybackIntent {
+  seq: number;
+  action: IntentAction;
+  actor: PlaybackActor;
+  /** Where the room was, and where it is going. Equal for a pause or a play. */
+  fromMs: number;
+  toMs: number;
+  /** Set for a load, so the card can name the film before a byte is fetched. */
+  title?: string;
+  mediaId?: string;
+  ts: number;
 }
 
 /**

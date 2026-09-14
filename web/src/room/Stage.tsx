@@ -6,10 +6,11 @@ import { usePrefs } from '@/state/prefs';
 import { useSession } from '@/state/session';
 import { HostBar } from './HostBar';
 import { MovieVideo } from './MovieVideo';
-import { BufferingGlyph, HoldingCard, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
+import { BufferingGlyph, HoldingCard, IntentEcho, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerBar } from './ViewerBar';
 import { HostedMovie, type HostedStatus } from '@/movie/HostedMovie';
+import { useIntentStore } from '@/movie/intent';
 import { usePlayback } from '@/movie/usePlayback';
 import { useTransport } from '@/movie/useTransport';
 import { useAutoHide } from './hooks';
@@ -53,7 +54,13 @@ export function Stage({
   // Stable, because HostedMovie's control loop lists it as a dependency: an
   // inline lambda here tore the 250 ms interval down and rebuilt it on every
   // render of this component.
-  const onHostedStatus = useCallback((st: HostedStatus) => setStalled(st.buffering), []);
+  const onHostedStatus = useCallback((st: HostedStatus) => {
+    setStalled(st.buffering);
+    // The loading card comes down when this machine actually has a picture,
+    // not when the command landed — which is the difference between a card
+    // that means something and a 200 ms flash.
+    if (!st.buffering) useIntentStore.getState().markStarted();
+  }, []);
   const stageRef = useRef<HTMLDivElement>(null);
   const hasMovie = hosted || !!movie.video;
   // Nothing to obscure without a picture, so keep the bar (and its "Open…") up.
@@ -173,7 +180,11 @@ export function Stage({
       {!hasMovie && <WaitingState projectorOnline={projectorOnline} projectorMode={projectorMode} isHost={isHost} onOpenLibrary={onOpenLibrary} />}
       {hasMovie && paused && !stalled && !holding && <PausedGlyph />}
       {hasMovie && stalled && !paused && <BufferingGlyph />}
-      {holding && <HoldingCard names={playback.state?.waitingFor ?? []} isHost={isHost} onStart={() => void transport.start()} />}
+      {holding ? (
+        <HoldingCard names={playback.state?.waitingFor ?? []} isHost={isHost} onStart={() => void transport.start()} />
+      ) : (
+        hosted && <IntentEcho />
+      )}
 
       <PauseRequestBanner />
       <QualityGlyph />

@@ -5,6 +5,7 @@ import { useMpvStore } from '@/host/useMpv';
 import { useNowPlaying } from '@/movie/store';
 import { useTransport } from '@/movie/useTransport';
 import { useBufferedRanges } from '@/movie/useBufferedRanges';
+import { useRoomLag } from '@/movie/useRoomLag';
 import { cn } from '@/lib/cn';
 import { publish } from '@/lib/data';
 import { formatTime } from '@/lib/format';
@@ -24,6 +25,7 @@ export function ViewerBar({ visible, videoRef }: { visible: boolean; videoRef: R
   const now = useNowPlaying();
   const transport = useTransport(now.hosted);
   const buffered = useBufferedRanges(videoRef, now.hosted);
+  const lag = useRoomLag(now.hosted);
   const pos = now.position;
 
   const requestPause = async () => {
@@ -51,7 +53,14 @@ export function ViewerBar({ visible, videoRef }: { visible: boolean; videoRef: R
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div className="max-w-[1400px] mx-auto">
-        <SeekBar position={pos} duration={now.duration} chapters={liveState?.chapters ?? []} buffered={buffered} />
+        <SeekBar
+          position={lag.position ?? pos}
+          roomPosition={pos}
+          pending={lag.pending}
+          duration={now.duration}
+          chapters={liveState?.chapters ?? []}
+          buffered={buffered}
+        />
         <div className="mt-1 flex items-center gap-3">
           <span className="font-mono text-[12px] text-white/90 tabular-nums">
             {formatTime(pos)} <span className="text-white/50">/ {formatTime(now.duration)}</span>

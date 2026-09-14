@@ -15,6 +15,7 @@ import (
 	"github.com/ShadowElf37/VideoStream/proto"
 	"github.com/ShadowElf37/VideoStream/server/internal/media"
 	"github.com/ShadowElf37/VideoStream/server/internal/playback"
+	"github.com/ShadowElf37/VideoStream/server/internal/tokens"
 )
 
 type playbackCommand struct {
@@ -35,6 +36,14 @@ func (s *Server) handleGetPlayback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.director.Snapshot())
+}
+
+// actorOf is the session as the director's notion of who did something.
+func actorOf(sess *tokens.Session) proto.PlaybackActor {
+	if sess == nil {
+		return proto.PlaybackActor{}
+	}
+	return proto.PlaybackActor{Identity: sess.Identity, Name: sess.Name, Color: sess.Color}
 }
 
 // handlePlaybackReady takes a client's word on whether it could start now.
@@ -87,22 +96,26 @@ func (s *Server) handlePlaybackCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// Who asked. The director echoes it on `playback.intent` ahead of the
+	// state, so a viewer sees "Alice skipped to 1:12:30" rather than the
+	// picture simply jumping.
+	actor := actorOf(sess)
 	var err error
 	switch cmd.Action {
 	case "load":
-		err = s.director.Load(ctx, cmd.MediaID)
+		err = s.director.Load(ctx, actor, cmd.MediaID)
 	case "enqueue":
-		err = s.director.Enqueue(ctx, cmd.MediaID)
+		err = s.director.Enqueue(ctx, actor, cmd.MediaID)
 	case "play":
-		err = s.director.SetPaused(ctx, false)
+		err = s.director.SetPaused(ctx, actor, false)
 	case "pause":
-		err = s.director.SetPaused(ctx, true)
+		err = s.director.SetPaused(ctx, actor, true)
 	case "toggle":
-		_, err = s.director.TogglePause(ctx)
+		_, err = s.director.TogglePause(ctx, actor)
 	case "seek":
-		_, err = s.director.Seek(ctx, cmd.PosMS, cmd.Relative)
+		_, err = s.director.Seek(ctx, actor, cmd.PosMS, cmd.Relative)
 	case "stop":
-		s.director.Stop(ctx)
+		s.director.Stop(ctx, actor)
 	case "start":
 		// The override for waitForEveryone: go now, whoever is still
 		// buffering. Host-only even with anyoneCanPause, because deciding to
