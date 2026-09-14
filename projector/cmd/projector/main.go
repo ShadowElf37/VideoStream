@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,13 @@ import (
 	"github.com/ShadowElf37/VideoStream/projector/internal/timeline"
 	"github.com/ShadowElf37/VideoStream/proto"
 )
+
+// The OpenGL render path puts the process's main OS thread under main's
+// goroutine and keeps it there: on macOS a GL context belongs to the thread
+// that made it current, and GLFW insists window operations happen on the main
+// one. Locking unconditionally costs the software path nothing — that thread
+// spends its life blocked in a select either way.
+func init() { runtime.LockOSThread() }
 
 type stringList []string
 
@@ -54,6 +62,7 @@ func main() {
 	ffmpegPath := flag.String("ffmpeg", "ffmpeg", "path to the ffmpeg binary")
 	mpvConfigDir := flag.String("mpv-config-dir", defaultMpvConfigDir(), "mpv config dir (mpv.conf, fonts, scripts)")
 	ipcSocket := flag.String("ipc-socket", defaultIPCSocket(), "mpv JSON IPC socket path")
+	render := flag.String("render", mpvhost.RenderSW, "mpv render path: sw (CPU, the default) | gl (OpenGL offscreen, readback via PBO)")
 	logLevel := flag.String("log-level", "info", "debug|info|warn|error")
 	flag.Parse()
 
@@ -71,6 +80,7 @@ func main() {
 		ffmpeg:    *ffmpegPath,
 		mpvConfig: *mpvConfigDir,
 		ipcSocket: *ipcSocket,
+		render:    *render,
 		file:      flag.Arg(0),
 	}); err != nil {
 		log.Error("projector failed", "err", err)
@@ -91,6 +101,7 @@ type runOpts struct {
 	ffmpeg    string
 	mpvConfig string
 	ipcSocket string
+	render    string
 	file      string
 }
 
@@ -122,6 +133,9 @@ func run(log *slog.Logger, o runOpts) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if !mpvhost.ValidRender(o.render) {
+		return fmt.Errorf("unknown --render %q (want sw or gl)", o.render)
+	}
 	preset, err := encoder.LookupPreset(o.preset)
 	if err != nil {
 		return err
@@ -198,11 +212,21 @@ func run(log *slog.Logger, o runOpts) error {
 		IPCSocket: o.ipcSocket,
 		Width:     preset.Width,
 		Height:    preset.Height,
+		Render:    o.render,
 	})
 	if err != nil {
 		return err
 	}
 	defer host.Close()
+
+	// Before anything loads a file: mpv initialises its video output on the
+	// first loadfile, and with no render context in place by then it gives up
+	// and plays the audio only.
+	if host.Render() == mpvhost.RenderGL {
+		if err := host.InitGL(); err != nil {
+			return err
+		}
+	}
 
 	epoch := time.Now()
 	tl := timeline.New(log, fifo, epoch)
@@ -305,7 +329,16 @@ func run(log *slog.Logger, o runOpts) error {
 		log.Info("loading", "target", target)
 	}
 
-	<-ctx.Done()
+	// In GL mode the render loop is this goroutine: it owns the GL context,
+	// which on macOS has to live on the main OS thread. Software mode has its
+	// own goroutine and this just waits.
+	if host.Render() == mpvhost.RenderGL {
+		if err := host.RunGL(ctx); err != nil {
+			log.Error("gl render loop", "err", err)
+		}
+	} else {
+		<-ctx.Done()
+	}
 	log.Info("shutting down")
 	if v := p.video.Load(); v != nil {
 		(*v).Close()

@@ -37,8 +37,9 @@ There is one room. Its URL is the site; three things get through:
 ## Quick start (local, one machine)
 
 Prerequisites on macOS: `brew install go node mpv opus ffmpeg livekit livekit-cli`.
-(Linux: Go 1.26+, Node 22+, `libmpv-dev libopus-dev ffmpeg pkg-config`, plus a
-LiveKit server binary.)
+(Linux: Go 1.26+, Node 22+, `libmpv-dev libopus-dev ffmpeg pkg-config`, the GL
+and X11 headers GLFW needs — `libgl1-mesa-dev libxrandr-dev libxi-dev
+libxcursor-dev libxinerama-dev` — plus a LiveKit server binary.)
 
 ```sh
 make web server projector          # builds the SPA into the server binary + the projector
@@ -63,6 +64,12 @@ joins with the same password:
 ```sh
 VS_PASSWORD=dev ./projector/bin/projector --room http://localhost:8080 --media-root ~/Videos ~/Videos/episode.mkv
 ```
+
+The projector renders mpv on the CPU by default. `--render gl` moves that to
+an offscreen OpenGL framebuffer read back through pixel buffer objects, which
+roughly halves the projector's own CPU at 1080p (39% of one core → 21% on an
+M1) at the cost of one frame of extra latency. It is the fallback for a 4K
+source or dense subtitles rather than the default.
 
 Host keys on the stage: `Space` pause, `←/→` ±5 s, `↑/↓` ±60 s; in projector
 mode also `j` cycle subtitles, `#` cycle audio, `z`/`x` sub delay. `f` is

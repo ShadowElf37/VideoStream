@@ -1,9 +1,16 @@
-// Package mpvhost embeds libmpv: it owns the mpv instance, its software render
-// context, the observed-property snapshot that becomes proto.MpvState, and the
-// event stream that becomes proto.MpvEvent.
+// Package mpvhost embeds libmpv: it owns the mpv instance, its render context,
+// the observed-property snapshot that becomes proto.MpvState, and the event
+// stream that becomes proto.MpvEvent.
+//
+// Two render paths produce the same bgr0 frames for the same consumer. The
+// software one is the default and runs in a goroutine started by New. The
+// OpenGL one (rendergl.go) has to be driven from main's goroutine, because on
+// macOS a GL context belongs to a thread and GLFW insists that thread is the
+// main one; New leaves it to the caller to run.
 //
 // Threading rules that the rest of the projector relies on:
-//   - only the render goroutine touches RenderContext methods;
+//   - only one goroutine ever touches RenderContext methods: the render
+//     goroutine in software mode, main's goroutine in GL mode;
 //   - the render update callback runs on an mpv thread and only signals a
 //     channel;
 //   - the event goroutine is the only caller of WaitEvent.
@@ -18,6 +25,7 @@ import (
 	"time"
 
 	"github.com/gen2brain/go-mpv"
+	"github.com/go-gl/glfw/v3.3/glfw"
 
 	"github.com/ShadowElf37/VideoStream/proto"
 )
@@ -31,6 +39,9 @@ type Config struct {
 	Width     int    // initial render size
 	Height    int
 	LogLevel  string // mpv msg-level, e.g. "all=warn"
+	// Render is "sw" (default) or "gl". In GL mode New does not start a
+	// render loop; the caller must run Host.RunGL from main's goroutine.
+	Render string
 }
 
 // Frame is one rendered picture. Buf is owned by the host and stays valid only
@@ -47,7 +58,13 @@ type Host struct {
 	log *slog.Logger
 	cfg Config
 	mpv *mpv.Mpv
-	rc  *mpv.RenderContext
+
+	// rc is written by whichever path created it, and read by Close.
+	rcMu sync.Mutex
+	rc   *mpv.RenderContext
+	// glWin is the invisible window holding the GL context, in GL mode.
+	// Touched only by InitGL and RunGL, which are the same goroutine.
+	glWin *glfw.Window
 
 	wake   chan struct{}
 	events chan proto.MpvEvent
@@ -78,6 +95,12 @@ func New(log *slog.Logger, cfg Config) (*Host, error) {
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "all=warn"
+	}
+	if cfg.Render == "" {
+		cfg.Render = RenderSW
+	}
+	if !ValidRender(cfg.Render) {
+		return nil, fmt.Errorf("unknown render path %q", cfg.Render)
 	}
 	h := &Host{
 		log:    log,
@@ -150,30 +173,54 @@ func New(log *slog.Logger, cfg Config) (*Host, error) {
 		h.mpv.TerminateDestroy()
 		return nil, fmt.Errorf("mpv initialize: %w", err)
 	}
-	rc, err := h.mpv.NewRenderContextSW()
-	if err != nil {
-		h.mpv.TerminateDestroy()
-		return nil, fmt.Errorf("mpv render context: %w", err)
-	}
-	h.rc = rc
-	rc.SetUpdateCallback(func() {
-		// Runs on an mpv thread: only ever signal.
-		select {
-		case h.wake <- struct{}{}:
-		default:
+	// The GL context cannot be created here: it needs a current OpenGL
+	// context, which only exists once RunGL has made one on the right thread.
+	if cfg.Render == RenderSW {
+		rc, err := h.mpv.NewRenderContextSW()
+		if err != nil {
+			h.mpv.TerminateDestroy()
+			return nil, fmt.Errorf("mpv render context: %w", err)
 		}
-	})
+		h.setRenderContext(rc)
+		rc.SetUpdateCallback(func() {
+			// Runs on an mpv thread: only ever signal.
+			select {
+			case h.wake <- struct{}{}:
+			default:
+			}
+		})
+	}
 	if err := h.mpv.RequestLogMessages("error"); err != nil {
 		h.log.Warn("mpv: request log messages", "err", err)
 	}
 	h.observe()
 
-	h.wg.Add(3)
-	go func() { defer h.wg.Done(); h.renderLoop() }()
+	h.wg.Add(2)
 	go func() { defer h.wg.Done(); h.eventLoop() }()
 	go func() { defer h.wg.Done(); h.dispatchLoop() }()
+	if cfg.Render == RenderSW {
+		h.wg.Add(1)
+		go func() { defer h.wg.Done(); h.renderLoop() }()
+	}
 	return h, nil
 }
+
+// setRenderContext records the context for Close. RunGL frees its own on the
+// way out, so Close must not find it there afterwards.
+func (h *Host) setRenderContext(rc *mpv.RenderContext) {
+	h.rcMu.Lock()
+	h.rc = rc
+	h.rcMu.Unlock()
+}
+
+func (h *Host) renderContext() *mpv.RenderContext {
+	h.rcMu.Lock()
+	defer h.rcMu.Unlock()
+	return h.rc
+}
+
+// Render reports which path this host was built for.
+func (h *Host) Render() string { return h.cfg.Render }
 
 // Mpv exposes the raw handle for callers that need the typed property API.
 func (h *Host) Mpv() *mpv.Mpv { return h.mpv }
@@ -225,17 +272,20 @@ func (h *Host) Close() {
 		h.mpv.Wakeup()
 	})
 	h.wg.Wait()
+	h.rcMu.Lock()
 	if h.rc != nil {
 		h.rc.Free()
 		h.rc = nil
 	}
+	h.rcMu.Unlock()
 	h.mpv.TerminateDestroy()
 	if h.cfg.IPCSocket != "" {
 		_ = os.Remove(h.cfg.IPCSocket)
 	}
 }
 
-// renderLoop is the only goroutine allowed to call RenderContext methods.
+// renderLoop is the software path: the only goroutine allowed to call
+// RenderContext methods in that mode.
 // RenderSW blocks until the frame's target display time, so the instant it
 // returns is the frame's presentation time on the same monotonic clock Go uses.
 func (h *Host) renderLoop() {
