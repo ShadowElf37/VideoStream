@@ -1,6 +1,6 @@
 import { useLocalParticipant, useParticipants } from '@livekit/components-react';
 import { ConnectionQuality, type Participant } from 'livekit-client';
-import { Clapperboard, Library as LibraryIcon, Pause, Radio, Wifi, WifiOff } from 'lucide-react';
+import { Clapperboard, Hourglass, Library as LibraryIcon, Pause, Radio, Wifi, WifiOff } from 'lucide-react';
 import { useEffect } from 'react';
 import { cn } from '@/lib/cn';
 import { colorFor } from '@/lib/colors';
@@ -134,6 +134,37 @@ export function PauseRequestBanner() {
       <div className="anim-pop pause-pulse flex items-center gap-2.5 rounded-xl bg-danger px-4 py-2.5 text-white shadow-[0_6px_28px_rgba(0,0,0,0.55)]">
         <Pause className="size-5 shrink-0" fill="currentColor" />
         <span className="text-[14px] font-semibold">{req.from} asked to pause</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The room is waiting for everyone to buffer.
+ *
+ * Deliberately not the red PAUSED glyph: nobody pressed pause, and a viewer
+ * who sees PAUSED over a film they asked for assumes something went wrong.
+ * Naming who it is waiting for is the point — it turns "why is this stuck"
+ * into "Dave's wifi", which is a thing a room can laugh about and act on.
+ */
+export function HoldingCard({ names, isHost, onStart }: { names: string[]; isHost: boolean; onStart: () => void }) {
+  const n = names.length;
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 p-4">
+      <div className="anim-pop glass-strong rounded-2xl px-6 py-5 text-center max-w-sm">
+        <div className="mx-auto size-12 rounded-xl bg-white/10 flex items-center justify-center text-accent mb-3">
+          <Hourglass className="size-6 animate-pulse" />
+        </div>
+        <h2 className="text-base font-semibold tracking-tight">
+          {n > 0 ? `Waiting for ${n} ${n === 1 ? 'person' : 'people'} to buffer…` : 'Waiting for everyone to buffer…'}
+        </h2>
+        {n > 0 && <p className="text-muted mt-1.5 text-sm break-words">{names.join(', ')}</p>}
+        <p className="text-muted mt-1.5 text-xs">Starting automatically as soon as everyone is ready.</p>
+        {isHost && (
+          <Button size="sm" className="mt-4" onClick={onStart}>
+            Start anyway
+          </Button>
+        )}
       </div>
     </div>
   );

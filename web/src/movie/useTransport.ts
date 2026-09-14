@@ -19,6 +19,8 @@ export interface Transport {
   /** Absolute when relative is false. */
   seek(ms: number, relative: boolean): Promise<void>;
   load(mediaId: string, mode: 'replace' | 'append'): Promise<void>;
+  /** Override a waitForEveryone hold: start now, whoever is still buffering. */
+  start(): Promise<void>;
 }
 
 export function useTransport(hosted: boolean): Transport {
@@ -46,6 +48,8 @@ export function useTransport(hosted: boolean): Transport {
           const r = await mpv.send(['vs/load', path, mode]);
           if (!r.ok) useSession.getState().toast(`Load failed: ${r.error ?? 'unknown error'}`, 'error');
         },
+        // Nothing holds on the live path; there is no buffer to wait for.
+        start: async () => undefined,
       };
     }
 
@@ -62,6 +66,7 @@ export function useTransport(hosted: boolean): Transport {
       setPaused: (paused) => send({ action: paused ? 'pause' : 'play' }),
       seek: (ms, relative) => send({ action: 'seek', posMs: Math.round(ms), relative }),
       load: (mediaId, mode) => send({ action: mode === 'append' ? 'enqueue' : 'load', mediaId }),
+      start: () => send({ action: 'start' }),
     };
   }, [hosted, mpv]);
 }

@@ -19,6 +19,8 @@ package playback
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,22 +42,27 @@ type Resolver interface {
 	Resolve(mediaID string) (durationMS int64, title, url string, err error)
 }
 
-// clock reads wall time without being moved by it.
+// Clock is the director's only source of time. An interface because the hold
+// logic has a six-second freshness window and a twenty-second timeout in it,
+// and a test that has to sleep through those is a test nobody runs.
+type Clock interface{ NowMS() int64 }
+
+// wallClock reads wall time without being moved by it.
 //
 // The wall clock is captured once and advanced by a monotonic reading, so an
 // NTP step or slew on the box cannot shift the anchor under every client at
 // once and make them all seek in unison for no reason.
-type clock struct {
+type wallClock struct {
 	wallEpoch time.Time
 	monoStart time.Time
 }
 
-func newClock() clock {
+func newWallClock() wallClock {
 	now := time.Now()
-	return clock{wallEpoch: now, monoStart: now}
+	return wallClock{wallEpoch: now, monoStart: now}
 }
 
-func (c clock) nowMS() int64 {
+func (c wallClock) NowMS() int64 {
 	return c.wallEpoch.Add(time.Since(c.monoStart)).UnixMilli()
 }
 
@@ -78,29 +85,92 @@ type room struct {
 
 	// queue is what plays when this finishes.
 	queue []string
+
+	// holding is waitForEveryone parking the room at a discontinuity until
+	// the slow clients catch up.
+	//
+	// Deliberately separate from paused: paused is what the room *intends*,
+	// holding is why it is not happening yet. Folding the two together would
+	// mean a release could not tell "the host pressed play and we are waiting"
+	// from "the host pressed pause", and the room would resume things nobody
+	// asked to resume. The wire state reports both as paused, because that is
+	// what a still picture is.
+	holding   bool
+	holdSince int64
+	// holdCold is set when the hold began with nobody reporting at all — a
+	// first load, or an idle room. Then, and only then, the decision waits
+	// out holdGraceMS so the first answers can arrive. In steady state every
+	// client already has a fresh report on file, so there is nothing to
+	// collect and no reason to make anyone wait.
+	holdCold bool
 }
+
+// report is one client's last word on whether it could start.
+type report struct {
+	name   string
+	gen    int64
+	ready  bool
+	seenAt int64
+}
+
+// How the hold is decided. All three numbers are judgement calls:
+//
+//   - A report older than ReportFreshMS is from someone who has closed their
+//     laptop. Waiting on them forever is how this feature becomes the thing
+//     everyone turns off.
+//   - HoldTimeoutMS is the promise that the room always eventually starts. A
+//     client on a genuinely hopeless link must not be able to stop the film.
+//   - holdGraceMS covers the gap between the command landing and the first
+//     answers for the new generation arriving. Without it the very first load
+//     — when nobody has ever reported — releases before anyone can object.
+const (
+	ReportFreshMS = 6_000
+	HoldTimeoutMS = 20_000
+	holdGraceMS   = 2_000
+	// reportTTLMS is only housekeeping: how long a silent client's entry
+	// lingers in the map before it is dropped.
+	reportTTLMS = 60_000
+)
 
 // Director holds the room's playback state.
 type Director struct {
 	mu   sync.Mutex
 	room *room
 
-	clock    clock
+	clock    Clock
 	bcast    Broadcaster
 	resolver Resolver
+
+	// waitForEveryone mirrors the room setting; the settings handler pushes
+	// it down so the director never has to reach back into the store.
+	waitForEveryone bool
+	// reports is the readiness of every client that has spoken recently,
+	// keyed by identity.
+	reports map[string]report
 	// seq is a broadcast counter, so a client can drop a packet that
 	// overtook a newer one.
 	seq int64
 }
 
-// New creates a director.
+// New creates a director on the real clock.
 func New(b Broadcaster, r Resolver) *Director {
-	return &Director{room: &room{rate: 1}, clock: newClock(), bcast: b, resolver: r}
+	return NewWithClock(b, r, newWallClock())
+}
+
+// NewWithClock creates a director on the given clock, for tests.
+func NewWithClock(b Broadcaster, r Resolver, c Clock) *Director {
+	return &Director{
+		room:     &room{rate: 1},
+		clock:    c,
+		bcast:    b,
+		resolver: r,
+		reports:  map[string]report{},
+	}
 }
 
 // NowMS exposes the director's clock, which is the clock clients synchronise
 // against.
-func (d *Director) NowMS() int64 { return d.clock.nowMS() }
+func (d *Director) NowMS() int64 { return d.clock.NowMS() }
 
 // posMS is where the room is now. Playing, it advances with the clock;
 // paused, it sits where it was left.
@@ -108,12 +178,17 @@ func (d *Director) posMS(r *room) int64 {
 	if r.mediaID == "" {
 		return 0
 	}
-	if r.paused {
+	if stopped(r) {
 		return clamp(r.anchorPosMS, r.durationMS)
 	}
-	elapsed := float64(d.clock.nowMS()-r.anchorAtMS) * r.rate
+	elapsed := float64(d.clock.NowMS()-r.anchorAtMS) * r.rate
 	return clamp(r.anchorPosMS+int64(elapsed), r.durationMS)
 }
+
+// stopped reports whether the picture is still — whether because the room is
+// paused or because it is holding. Everything that asks "is time advancing"
+// wants this rather than r.paused.
+func stopped(r *room) bool { return r.paused || r.holding }
 
 // atEnd reports whether a position is close enough to the end that resuming
 // there would immediately end again. The tolerance covers a film whose last
@@ -137,7 +212,7 @@ func clamp(v, max int64) int64 {
 // and the generation counter honest.
 func (d *Director) reanchor(r *room, posMS int64) {
 	r.anchorPosMS = clamp(posMS, r.durationMS)
-	r.anchorAtMS = d.clock.nowMS()
+	r.anchorAtMS = d.clock.NowMS()
 	r.gen++
 }
 
@@ -156,13 +231,17 @@ func (d *Director) snapshotLocked() proto.PlaybackState {
 		Title:       r.title,
 		URL:         r.url,
 		DurationMS:  r.durationMS,
-		Paused:      r.paused,
+		Paused:      stopped(r),
 		AnchorPosMS: r.anchorPosMS,
 		AnchorAtMS:  r.anchorAtMS,
 		Rate:        r.rate,
 		Gen:         r.gen,
-		ServerNowMS: d.clock.nowMS(),
+		ServerNowMS: d.clock.NowMS(),
 		Queue:       append([]string(nil), r.queue...),
+		Holding:     r.holding,
+	}
+	if r.holding {
+		st.WaitingFor = d.waitingForLocked()
 	}
 	if r.mediaID == "" {
 		st.Idle = true
@@ -219,6 +298,7 @@ func (d *Director) load(ctx context.Context, mediaID string, clearQueue bool) er
 	if clearQueue {
 		r.queue = nil
 	}
+	d.armHold(r)
 	d.reanchor(r, 0)
 	d.mu.Unlock()
 	d.Publish(ctx)
@@ -233,7 +313,10 @@ func (d *Director) SetPaused(ctx context.Context, paused bool) error {
 		d.mu.Unlock()
 		return ErrNoMedia
 	}
-	if r.paused != paused {
+	// Holding counts as paused to the outside world, so "resume" while held
+	// must still be a change — that is what re-arms the hold at a fresh
+	// position rather than silently doing nothing.
+	if r.paused != paused || (r.holding && !paused) {
 		pos := d.posMS(r)
 		// Resuming a film that has already finished restarts it, rather than
 		// resuming at the end — where the run loop would notice it is past the
@@ -243,6 +326,13 @@ func (d *Director) SetPaused(ctx context.Context, paused bool) error {
 			pos = 0
 		}
 		r.paused = paused
+		if paused {
+			// An explicit pause supersedes the hold: the room is now stopped
+			// because someone asked, and nothing is waiting to start.
+			r.holding = false
+		} else if !r.holding {
+			d.armHold(r)
+		}
 		d.reanchor(r, pos)
 	}
 	d.mu.Unlock()
@@ -259,10 +349,18 @@ func (d *Director) TogglePause(ctx context.Context) (bool, error) {
 		return false, ErrNoMedia
 	}
 	pos := d.posMS(r)
-	r.paused = !r.paused
-	paused := r.paused
+	// Toggling a held room cancels the wait rather than overriding it: the
+	// picture is already still, so the button under the host's finger reads
+	// as pause, and "Start anyway" is the separate thing that starts it.
+	paused := r.holding || !r.paused
+	r.paused = paused
 	if !paused && atEnd(r, pos) {
 		pos = 0
+	}
+	if paused {
+		r.holding = false
+	} else {
+		d.armHold(r)
 	}
 	d.reanchor(r, pos)
 	d.mu.Unlock()
@@ -282,6 +380,12 @@ func (d *Director) Seek(ctx context.Context, ms int64, relative bool) (int64, er
 	if relative {
 		target = d.posMS(r) + ms
 	}
+	// A seek only starts anything if the room was playing, so only then is
+	// there a start to wait for. Scrubbing around while paused must not put
+	// up a "waiting for everyone" card over a still picture.
+	if !r.paused {
+		d.armHold(r)
+	}
 	d.reanchor(r, target)
 	landed := r.anchorPosMS
 	d.mu.Unlock()
@@ -297,10 +401,206 @@ func (d *Director) Stop(ctx context.Context) {
 	r.durationMS, r.anchorPosMS = 0, 0
 	r.queue = nil
 	r.paused = true
+	r.holding = false
 	r.gen++
-	r.anchorAtMS = d.clock.nowMS()
+	r.anchorAtMS = d.clock.NowMS()
 	d.mu.Unlock()
 	d.Publish(ctx)
+}
+
+// waitForEveryone: holding the room together
+// ------------------------------------------------------------------------
+//
+// The old contract was that the host presses play and everyone scrambles: a
+// client that has not buffered stalls, then chases the anchor at 1.05x, and
+// the people who were ready watch the first minute knowing someone else is
+// not with them. With the server owning playback time and every browser
+// already computing how much it has buffered, the honest alternative is for
+// the director to simply not start until it has heard back.
+
+// SetWaitForEveryone mirrors the room setting into the director. Turning it
+// off while the room is holding releases immediately: the setting is off, so
+// there is nothing left to wait for.
+func (d *Director) SetWaitForEveryone(ctx context.Context, on bool) {
+	d.mu.Lock()
+	d.waitForEveryone = on
+	release := !on && d.room.holding
+	if release {
+		d.releaseLocked()
+	}
+	d.mu.Unlock()
+	if release {
+		d.Publish(ctx)
+	}
+}
+
+// armHold marks a discontinuity that would play as one to wait on. Called
+// with the lock held, before reanchor, by every transport path that starts
+// the film.
+func (d *Director) armHold(r *room) {
+	if !d.waitForEveryone || r.mediaID == "" {
+		return
+	}
+	now := d.clock.NowMS()
+	r.holding = true
+	r.holdSince = now
+	r.holdCold = d.freshCountLocked(now) == 0
+}
+
+// freshCountLocked is how many clients have said anything recently.
+func (d *Director) freshCountLocked(now int64) int {
+	n := 0
+	for _, rep := range d.reports {
+		if now-rep.seenAt <= ReportFreshMS {
+			n++
+		}
+	}
+	return n
+}
+
+// Report records what a client says about its own readiness.
+//
+// Clients report while a title is loaded whether or not the room is holding,
+// which is what makes the *next* hold able to decide quickly: the window is
+// already populated when the command lands.
+func (d *Director) Report(ctx context.Context, identity, name string, r proto.PlaybackReady) {
+	if identity == "" {
+		return
+	}
+	d.mu.Lock()
+	now := d.clock.NowMS()
+	before := d.waitingKeyLocked()
+	d.reports[identity] = report{name: name, gen: r.Gen, ready: r.Ready, seenAt: now}
+	d.pruneLocked(now)
+	// Evaluating here as well as in the run loop is what keeps the release
+	// prompt: the last person to finish buffering is usually the one whose
+	// report arrives, and making them wait up to another second for a tick
+	// would be a second of everybody staring at a card for no reason.
+	released := d.evaluateHoldLocked()
+	changed := released || d.waitingKeyLocked() != before
+	d.mu.Unlock()
+	if changed {
+		d.Publish(ctx)
+	}
+}
+
+// Start is the host overriding a hold: go now, whoever is not ready.
+func (d *Director) Start(ctx context.Context) error {
+	d.mu.Lock()
+	if d.room.mediaID == "" {
+		d.mu.Unlock()
+		return ErrNoMedia
+	}
+	if d.room.holding {
+		d.releaseLocked()
+	}
+	d.mu.Unlock()
+	d.Publish(ctx)
+	return nil
+}
+
+// releaseLocked starts the held film, re-anchoring at the position it was
+// parked at. Re-anchoring is the point: the clients have been sitting at that
+// frame for however long the wait took, and an anchor from before the hold
+// would tell them the film had been running all along.
+func (d *Director) releaseLocked() {
+	r := d.room
+	r.holding = false
+	d.reanchor(r, r.anchorPosMS)
+}
+
+// evaluateHoldLocked releases the hold if it is satisfied, and reports
+// whether it did.
+func (d *Director) evaluateHoldLocked() bool {
+	r := d.room
+	if !r.holding {
+		return false
+	}
+	if !d.canStartLocked() {
+		return false
+	}
+	d.releaseLocked()
+	return true
+}
+
+// canStartLocked is the decision itself, split out because it is the part
+// worth reading: everyone who is still talking to us is ready for the
+// generation we are actually waiting at, or we have waited long enough.
+func (d *Director) canStartLocked() bool {
+	r := d.room
+	now := d.clock.NowMS()
+	if !d.waitForEveryone {
+		return true
+	}
+	if now-r.holdSince >= HoldTimeoutMS {
+		return true
+	}
+	// A cold start collects answers before it judges them. Without this the
+	// first client to say "ready" releases the room while the second has not
+	// been heard from at all — which is the room's first film, every time.
+	if r.holdCold && now-r.holdSince < holdGraceMS {
+		return false
+	}
+	fresh, blocked := 0, 0
+	for _, rep := range d.reports {
+		if now-rep.seenAt > ReportFreshMS {
+			continue
+		}
+		fresh++
+		// A report for an older generation is not a "no", but it is not a
+		// "yes" either: it answers a question about a position the room has
+		// already left.
+		if !rep.ready || rep.gen != r.gen {
+			blocked++
+		}
+	}
+	if fresh == 0 {
+		// Nobody is talking to us: an empty room, a projector-only room, or
+		// clients on an older build. Start rather than wedge the room.
+		return true
+	}
+	return blocked == 0
+}
+
+// waitingForLocked names the people still buffering, newest information
+// first-come; sorted so the card does not reshuffle every second.
+func (d *Director) waitingForLocked() []string {
+	r := d.room
+	now := d.clock.NowMS()
+	var names []string
+	for identity, rep := range d.reports {
+		if now-rep.seenAt > ReportFreshMS {
+			continue
+		}
+		if rep.ready && rep.gen == r.gen {
+			continue
+		}
+		name := rep.name
+		if name == "" {
+			name = identity
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// waitingKeyLocked is the waiting list as one comparable string, so Report can
+// tell whether anything a client would see has actually changed.
+func (d *Director) waitingKeyLocked() string {
+	if !d.room.holding {
+		return ""
+	}
+	return strings.Join(d.waitingForLocked(), "\x00")
+}
+
+// pruneLocked drops clients that stopped talking to us a minute ago.
+func (d *Director) pruneLocked(now int64) {
+	for identity, rep := range d.reports {
+		if now-rep.seenAt > reportTTLMS {
+			delete(d.reports, identity)
+		}
+	}
 }
 
 // Publish broadcasts the current state to the room.
@@ -329,13 +629,24 @@ func (d *Director) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if d.ended() {
-				d.advance(ctx)
-			}
-			if d.active() {
-				d.Publish(ctx)
-			}
+			d.Tick(ctx)
 		}
+	}
+}
+
+// Tick is one pass of the run loop, factored out so tests can drive the hold
+// timeout and the freshness window without sleeping through them.
+func (d *Director) Tick(ctx context.Context) {
+	if d.ended() {
+		d.advance(ctx)
+	}
+	d.mu.Lock()
+	d.pruneLocked(d.clock.NowMS())
+	released := d.evaluateHoldLocked()
+	active := d.room.mediaID != ""
+	d.mu.Unlock()
+	if released || active {
+		d.Publish(ctx)
 	}
 }
 
@@ -344,14 +655,7 @@ func (d *Director) ended() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	r := d.room
-	return r.mediaID != "" && !r.paused && r.durationMS > 0 && d.posMS(r) >= r.durationMS
-}
-
-// active reports whether anything is loaded.
-func (d *Director) active() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.room.mediaID != ""
+	return r.mediaID != "" && !stopped(r) && r.durationMS > 0 && d.posMS(r) >= r.durationMS
 }
 
 // advance moves to the next queued title, or holds at the end.
@@ -362,6 +666,7 @@ func (d *Director) advance(ctx context.Context) {
 		// Hold on the last frame rather than unloading: the room is still
 		// watching something, it has simply finished.
 		r.paused = true
+		r.holding = false
 		d.reanchor(r, r.durationMS)
 		d.mu.Unlock()
 		d.Publish(ctx)
@@ -375,6 +680,7 @@ func (d *Director) advance(ctx context.Context) {
 		// room; drop it and try the next one on the following tick.
 		d.mu.Lock()
 		d.room.paused = true
+		d.room.holding = false
 		d.mu.Unlock()
 		d.Publish(ctx)
 	}

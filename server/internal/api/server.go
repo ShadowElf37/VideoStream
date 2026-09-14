@@ -52,6 +52,14 @@ func NewServer(cfg *config.Config, roomsSvc *rooms.Service, chatSvc *chat.Servic
 // invite link once everyone has left). Both live as long as ctx.
 func (s *Server) Start(ctx context.Context) {
 	if s.director != nil {
+		// The director keeps its own copy of waitForEveryone so it never has
+		// to reach back into the store on the transport path; seed it from
+		// what was persisted, then let the settings handler push changes.
+		if room, err := s.rooms.Get(ctx); err == nil {
+			s.director.SetWaitForEveryone(ctx, room.Settings.WaitForEveryone)
+		} else {
+			s.logger.Warn("read settings for the director", "err", err)
+		}
 		go s.director.Run(ctx)
 	}
 	go s.watcher.Run(ctx)
@@ -101,6 +109,7 @@ func (s *Server) Routes(spa http.Handler) http.Handler {
 	// identify and no roster race to lose.
 	mux.HandleFunc("GET /api/room/playback", s.requireSession(s.handleGetPlayback))
 	mux.HandleFunc("POST /api/room/playback", s.requireSession(s.handlePlaybackCommand))
+	mux.HandleFunc("POST /api/room/playback/ready", s.requireSession(s.handlePlaybackReady))
 
 	if spa != nil {
 		mux.Handle("/", spa)

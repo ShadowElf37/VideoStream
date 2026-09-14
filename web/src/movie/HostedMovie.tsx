@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api } from '@/lib/api';
 import type { PlaybackState } from '@/proto/messages';
-import { bufferedAheadMs, decide, initialSyncState, type SyncState } from './sync';
+import { useSession } from '@/state/session';
+import { bufferedAheadMs, decide, initialSyncState, RESUME_BUFFER_MS, START_BUFFER_MS, type SyncState } from './sync';
 import { clientNowMs, targetMs } from './clock';
+import { isReady, REPORT_PERIOD_MS, reportKey } from './ready';
 import { useSyncStats, type Correction } from './syncStats';
 
 /**
@@ -14,11 +17,6 @@ import { useSyncStats, type Correction } from './syncStats';
  * whatever happens to have arrived; it is what the director says, and this
  * steers the element toward it.
  */
-
-/** Enough buffered to start without stalling a second later. */
-export const START_BUFFER_MS = 3000;
-/** Lower after a stall: we already know the file plays, and the alternative is a long freeze. */
-export const RESUME_BUFFER_MS = 2000;
 
 /** How often to compare where we are against where the room is. */
 const TICK_MS = 250;
@@ -57,6 +55,26 @@ export function HostedMovie({
   // does — otherwise the last sample would sit there over a live RTP picture
   // looking current.
   useEffect(() => () => useSyncStats.getState().clear(), []);
+
+  // Readiness reports, for waitForEveryone. Sent whether or not the room is
+  // holding: the director decides a hold from the answers it already has, so
+  // a window that is warm before the command lands is what makes the release
+  // quick rather than a two-second pause of its own.
+  const lastReport = useRef({ key: '', gen: -1, ahead: 0, ready: false });
+  const postReport = useCallback((gen: number, ahead: number, ready: boolean) => {
+    const session = useSession.getState().token?.session;
+    if (!session) return;
+    lastReport.current = { key: reportKey(gen, ready), gen, ahead, ready };
+    void api.playbackReady(session, { gen, bufferedAheadMs: Math.round(ahead), ready }).catch(() => undefined);
+  }, []);
+  useEffect(() => {
+    if (!state.url) return;
+    const id = setInterval(() => {
+      const r = lastReport.current;
+      if (r.gen >= 0) postReport(r.gen, r.ahead, r.ready);
+    }, REPORT_PERIOD_MS);
+    return () => clearInterval(id);
+  }, [state.url, postReport]);
 
   // Point the element at the file. Guarded on the URL so that a re-render, a
   // pause, or a new broadcast never reassigns src — which would throw away
@@ -168,10 +186,17 @@ export function HostedMovie({
         lastCorrection: lastCorrection.current,
         at: now,
       });
+      // A flip in readiness goes out at once rather than waiting for the next
+      // heartbeat: the last person to finish buffering is the one everybody
+      // else is watching a card about.
+      const ready = isReady(ahead, el.currentTime * 1000, state.durationMs);
+      if (reportKey(state.gen, ready) !== lastReport.current.key) postReport(state.gen, ahead, ready);
+      else lastReport.current.ahead = ahead;
+
       onStatus?.({ errorMs, bufferedAheadMs: ahead, buffering: gated, rate: action.rate });
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [state, offsetMs, videoRef, buffering, onStatus]);
+  }, [state, offsetMs, videoRef, buffering, onStatus, postReport]);
 
   return (
     <video

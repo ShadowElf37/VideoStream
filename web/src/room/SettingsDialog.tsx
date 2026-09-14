@@ -186,6 +186,12 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
         {role === 'host' && settings && (
           <Section title="Room (host)" hint="Applies to everyone.">
             <Switch label="Anyone can pause" hint="Otherwise viewers can only ask." checked={settings.anyoneCanPause} onCheckedChange={(v) => void patchRoom({ anyoneCanPause: v })} />
+            <Switch
+              label="Wait for everyone to buffer"
+              hint="Films hosted on the server only. Play, seek and picking a title park the room until everyone has enough buffered — or 20 s, whichever is first. You can always start anyway."
+              checked={settings.waitForEveryone}
+              onCheckedChange={(v) => void patchRoom({ waitForEveryone: v })}
+            />
             <Switch label="Default: deafen implies mute" hint="Suggested default for new joiners; everyone can override." checked={settings.deafenImpliesMute} onCheckedChange={(v) => void patchRoom({ deafenImpliesMute: v })} />
             <Field label="Maximum quality preset" hint="Caps the encoder preset a host can pick when streaming from their own machine. Films pushed to the server are already encoded.">
               <Select value={settings.maxPreset} onChange={(e) => void patchRoom({ maxPreset: e.target.value as QualityPreset })}>

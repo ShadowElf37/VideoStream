@@ -45,6 +45,11 @@ type RoomSettings struct {
 	AnyoneCanPause    bool   `json:"anyoneCanPause"`
 	DeafenImpliesMute bool   `json:"deafenImpliesMute"`
 	MaxPreset         string `json:"maxPreset"`
+	// WaitForEveryone holds playback at every discontinuity until each client
+	// that is still reporting says it has buffered enough to start. Off by
+	// default: it trades a few seconds at the top of a scene for nobody
+	// scrambling to catch up, and that is a room's choice, not ours.
+	WaitForEveryone bool `json:"waitForEveryone"`
 }
 
 type ChatAuthor struct {
@@ -250,4 +255,22 @@ type PlaybackState struct {
 
 	// Queue is the media ids waiting behind this one.
 	Queue []string `json:"queue"`
+
+	// Holding is true while waitForEveryone is parking the room at a
+	// discontinuity until the slow clients catch up. The room reads as
+	// paused as well — holding is the reason, not a second kind of pause.
+	Holding bool `json:"holding"`
+	// WaitingFor names the people still buffering, for the card that says so.
+	WaitingFor []string `json:"waitingFor,omitempty"`
+}
+
+// PlaybackReady is a client telling the director whether it could start now.
+//
+// Gen matters as much as Ready: "I am buffered" is only an answer to the
+// question the director is currently asking, and a report for a position the
+// room has already left says nothing about the one it is waiting at.
+type PlaybackReady struct {
+	Gen             int64 `json:"gen"`
+	BufferedAheadMS int64 `json:"bufferedAheadMs"`
+	Ready           bool  `json:"ready"`
 }

@@ -28,6 +28,12 @@ export interface RoomSettings {
   anyoneCanPause: boolean;
   deafenImpliesMute: boolean;
   maxPreset: QualityPreset;
+  /**
+   * Hold playback at every discontinuity until each client that is still
+   * reporting says it has buffered enough to start. Off by default: it trades
+   * a few seconds at the top of a scene for nobody scrambling to catch up.
+   */
+  waitForEveryone: boolean;
 }
 
 export type QualityPreset = '1080p-high' | '1080p' | '720p' | '540p';
@@ -227,6 +233,27 @@ export interface PlaybackState {
   /** The anchor evaluated at serverNowMs, for convenience. */
   posMs: number;
   queue: string[];
+  /**
+   * True while waitForEveryone is parking the room at a discontinuity until
+   * the slow clients catch up. The room reads as paused as well — holding is
+   * the reason, not a second kind of pause.
+   */
+  holding: boolean;
+  /** Who is still buffering, for the card that says so. */
+  waitingFor?: string[];
+}
+
+/**
+ * A client telling the director whether it could start now.
+ *
+ * `gen` matters as much as `ready`: "I am buffered" is only an answer to the
+ * question the director is currently asking, and a report for a position the
+ * room has already left says nothing about the one it is waiting at.
+ */
+export interface PlaybackReady {
+  gen: number;
+  bufferedAheadMs: number;
+  ready: boolean;
 }
 
 /** One title in the pushed library. */

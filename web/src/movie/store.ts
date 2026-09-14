@@ -44,6 +44,14 @@ export interface NowPlaying {
   /** False when there is no player at all to command. */
   controllable: boolean;
   title: string;
+  /**
+   * The room is parked at a discontinuity waiting for everyone to buffer
+   * (`waitForEveryone`). It is paused as well — holding is the reason, and
+   * this is what lets the stage explain it instead of showing a bare PAUSED.
+   */
+  holding: boolean;
+  /** Who it is waiting for. */
+  waitingFor: string[];
 }
 
 export function useNowPlaying(): NowPlaying {
@@ -65,6 +73,8 @@ export function useNowPlaying(): NowPlaying {
       duration: playback.durationMs / 1000,
       controllable: true,
       title: playback.title,
+      holding: playback.holding,
+      waitingFor: playback.waitingFor ?? [],
     };
   }
   return {
@@ -76,6 +86,10 @@ export function useNowPlaying(): NowPlaying {
     // The live path needs its projector present to command anything.
     controllable: projectorOnline,
     title: mpv?.mediaTitle ?? '',
+    // The live projector has no buffer to wait on: it publishes RTP and the
+    // clients take what arrives.
+    holding: false,
+    waitingFor: [],
   };
 }
 

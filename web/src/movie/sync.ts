@@ -62,6 +62,17 @@ export const ESCALATE_WINDOW_MS = 15_000;
 export const ESCALATED_HARD_MS = 2500;
 export const ESCALATION_HOLD_MS = 60_000;
 
+/**
+ * The start gate. Enough buffered to play through rather than to start and
+ * stall a second later; it is also the answer this client gives the director
+ * when the room is waiting for everyone, which is why it lives here with the
+ * rest of the control law rather than inside the component.
+ */
+export const START_BUFFER_MS = 3000;
+
+/** Lower after a stall: we already know the file plays, and the alternative is a long freeze. */
+export const RESUME_BUFFER_MS = 2000;
+
 export interface SyncInput {
   /** Signed error in ms: positive means this client is ahead of the room. */
   errorMs: number;

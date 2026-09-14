@@ -6,7 +6,7 @@ import { usePrefs } from '@/state/prefs';
 import { useSession } from '@/state/session';
 import { HostBar } from './HostBar';
 import { MovieVideo } from './MovieVideo';
-import { BufferingGlyph, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
+import { BufferingGlyph, HoldingCard, PauseRequestBanner, PausedGlyph, QualityGlyph, ReactionsLayer, SpeakingChips, Toasts, WaitingState } from './Overlays';
 import { StatsOverlay } from './StatsOverlay';
 import { ViewerBar } from './ViewerBar';
 import { HostedMovie, type HostedStatus } from '@/movie/HostedMovie';
@@ -139,6 +139,9 @@ export function Stage({
   const paused = hosted
     ? !!playback.state?.paused
     : !!state && !state.idle && state.pause;
+  // Holding is a kind of paused, but not the kind anyone pressed: it gets the
+  // card that says who the room is waiting for, instead of the red glyph.
+  const holding = hosted && !!playback.state?.holding;
 
   return (
     <div
@@ -168,8 +171,9 @@ export function Stage({
       )}
 
       {!hasMovie && <WaitingState projectorOnline={projectorOnline} projectorMode={projectorMode} isHost={isHost} onOpenLibrary={onOpenLibrary} />}
-      {hasMovie && paused && !stalled && <PausedGlyph />}
+      {hasMovie && paused && !stalled && !holding && <PausedGlyph />}
       {hasMovie && stalled && !paused && <BufferingGlyph />}
+      {holding && <HoldingCard names={playback.state?.waitingFor ?? []} isHost={isHost} onStart={() => void transport.start()} />}
 
       <PauseRequestBanner />
       <QualityGlyph />

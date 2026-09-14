@@ -51,6 +51,7 @@ projector identity with `projector: true`.
 | PATCH | `/api/room/settings` | partial `RoomSettings` → `RoomSettings` (Bearer `session`, host only; broadcast on topic `settings`) |
 | GET | `/api/room/playback` | → `PlaybackState` (Bearer `session`) |
 | POST | `/api/room/playback` | `{action, mediaId?, posMs?, relative?}` → `PlaybackState` (Bearer `session`; host, or anyone for pause-ish actions when `anyoneCanPause`) |
+| POST | `/api/room/playback/ready` | `PlaybackReady` `{gen, bufferedAheadMs, ready}` → 204 (Bearer `session`; anyone in the room) |
 | GET | `/api/media` | → `{items: (MediaMeta & {url})[], freeBytes}` (Bearer `session`) |
 | DELETE | `/api/media/{id}` | (Bearer `session`, host only) |
 | GET | `/media/{id}/{file}?e=&s=` | the bytes, behind a signed URL (Range supported) |
@@ -71,10 +72,51 @@ proxied by Caddy). Wrong passwords are rate-limited per client address.
 | `react` | client → all | no | `ReactMessage` |
 | `presence` | client → all | yes | `PresenceMessage` (sent on join and on change) |
 | `settings` | server → all | yes | `RoomSettings` |
+| `playback` | server → all | no | `PlaybackState` (on every command, plus 1 Hz while something is loaded) |
 | `mpv.cmd` | host → projector | yes | `MpvCommand` |
 | `mpv.reply` | projector → sender | yes | `MpvReply` |
 | `mpv.state` | projector → all | no | `MpvState` (4 Hz while playing, plus on change) |
 | `mpv.event` | projector → all | yes | `MpvEvent` |
+
+## Playback actions
+
+`POST /api/room/playback` takes one `action`:
+
+| Action | Body | Who |
+|---|---|---|
+| `load` | `{mediaId}` | host |
+| `enqueue` | `{mediaId}` | host |
+| `play` / `pause` / `toggle` | — | host, or anyone when `anyoneCanPause` |
+| `seek` | `{posMs, relative?}` | host |
+| `stop` | — | host |
+| `start` | — | host (overrides a `waitForEveryone` hold) |
+
+## waitForEveryone
+
+Off by default. With it on, every discontinuity that *would start the film* —
+load, resume, a seek while playing, toggling into play — parks the room at the
+target instead: `PlaybackState.paused` and `holding` are both true, and
+`waitingFor` names who is not ready yet. Pausing, stopping and seeking while
+already paused never hold, because nothing was about to start.
+
+Each browser posts `PlaybackReady` every ~2 s while a title is loaded, and
+immediately when its answer flips. `ready` is the player's own start gate:
+three seconds buffered ahead, or buffered to the end of the film. `gen` is what
+makes the answer meaningful — a report for a position the room has already left
+neither blocks the hold nor satisfies it.
+
+The director releases the hold — re-anchoring as it does, so the clients start
+from the frame they were parked on — when any of these is true:
+
+- every report seen in the last **6 s** is `ready` at the current `gen`;
+- **20 s** have passed (a client on a hopeless link cannot stop the film);
+- a host sends the `start` action, or turns the setting off.
+
+A hold that begins when *nobody* has reported recently — a first load, an idle
+room — waits **2 s** first, so the first answers can arrive before they are
+judged. Otherwise whoever answers first would start the film for everybody. If
+nothing is reporting at all (an empty room, projector-only, older clients) the
+room starts rather than wedging.
 
 ## mpv commands
 

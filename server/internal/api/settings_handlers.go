@@ -18,6 +18,7 @@ type settingsPatch struct {
 	AnyoneCanPause    *bool   `json:"anyoneCanPause"`
 	DeafenImpliesMute *bool   `json:"deafenImpliesMute"`
 	MaxPreset         *string `json:"maxPreset"`
+	WaitForEveryone   *bool   `json:"waitForEveryone"`
 }
 
 func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
@@ -58,11 +59,21 @@ func (s *Server) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 		settings.MaxPreset = *patch.MaxPreset
 		systemLines = append(systemLines, fmt.Sprintf("Host changed room settings: max quality = %s", settings.MaxPreset))
 	}
+	if patch.WaitForEveryone != nil && *patch.WaitForEveryone != settings.WaitForEveryone {
+		settings.WaitForEveryone = *patch.WaitForEveryone
+		systemLines = append(systemLines, fmt.Sprintf("Host changed room settings: wait for everyone to buffer = %s", onOff(settings.WaitForEveryone)))
+	}
 
 	if err := s.rooms.UpdateSettings(r.Context(), settings); err != nil {
 		s.logger.Error("update settings failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
+	}
+
+	// The director keeps its own copy: turning the setting off while the room
+	// is holding has to release it, not leave it parked forever.
+	if s.director != nil {
+		s.director.SetWaitForEveryone(r.Context(), settings.WaitForEveryone)
 	}
 
 	if err := s.chat.BroadcastSettings(r.Context(), settings); err != nil {

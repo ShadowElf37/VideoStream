@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   Links,
   MediaMeta,
+  PlaybackReady,
   PlaybackState,
   RoomInfo,
   RoomSettings,
@@ -93,6 +94,14 @@ export const api = {
 
   playback: (session: string, body: { action: string; mediaId?: string; posMs?: number; relative?: boolean }) =>
     request<PlaybackState>('/api/room/playback', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      session,
+    }),
+
+  /** Tell the director whether this client could start now; see waitForEveryone. */
+  playbackReady: (session: string, body: PlaybackReady) =>
+    request<void>('/api/room/playback/ready', {
       method: 'POST',
       body: JSON.stringify(body),
       session,

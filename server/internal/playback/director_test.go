@@ -340,3 +340,299 @@ func TestTogglePlayAtEndRestarts(t *testing.T) {
 		t.Errorf("toggling play at the end resumed at %d ms, want a restart", st.PosMS)
 	}
 }
+
+// waitForEveryone ----------------------------------------------------------
+
+// fakeClock lets the hold's six-second window and twenty-second timeout be
+// tested in microseconds instead of slept through.
+type fakeClock struct{ ms int64 }
+
+func (c *fakeClock) NowMS() int64     { return c.ms }
+func (c *fakeClock) advance(ms int64) { c.ms += ms }
+
+func newHoldingDirector(t *testing.T) (*Director, *capture, *fakeClock) {
+	t.Helper()
+	c := &capture{}
+	clk := &fakeClock{ms: 1_700_000_000_000}
+	d := NewWithClock(c, stubResolver{durations: map[string]int64{
+		"short": 1500, "film": 7_200_000, "next": 60_000,
+	}}, clk)
+	d.SetWaitForEveryone(context.Background(), true)
+	return d, c, clk
+}
+
+func ready(gen int64) proto.PlaybackReady {
+	return proto.PlaybackReady{Gen: gen, BufferedAheadMS: 5000, Ready: true}
+}
+
+func notReady(gen int64) proto.PlaybackReady {
+	return proto.PlaybackReady{Gen: gen, BufferedAheadMS: 300, Ready: false}
+}
+
+// pastGrace moves past the cold-start collection window, where a hold that
+// began with nobody reporting waits for the first answers.
+func pastGrace(d *Director, clk *fakeClock) {
+	clk.advance(holdGraceMS + 1)
+	d.Tick(context.Background())
+}
+
+// The whole point: loading with the setting on parks the room rather than
+// starting it, and says who it is waiting for.
+func TestHoldOnLoadUntilEveryoneIsReady(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+
+	st := d.Snapshot()
+	if !st.Holding {
+		t.Fatal("loading with waitForEveryone on did not hold")
+	}
+	if !st.Paused {
+		t.Error("a held room must read as paused; clients have nothing else to go on")
+	}
+	gen := st.Gen
+
+	// Alice answers first and says go. The cold-start window is what stops
+	// that from starting the film before Bob has been heard from at all.
+	d.Report(ctx, "a", "Alice", ready(gen))
+	if !d.Snapshot().Holding {
+		t.Fatal("started on the first answer, before Bob had been heard from at all")
+	}
+	d.Report(ctx, "b", "Bob", notReady(gen))
+	pastGrace(d, clk)
+
+	st = d.Snapshot()
+	if !st.Holding {
+		t.Fatal("released while Bob was still buffering")
+	}
+	if len(st.WaitingFor) != 1 || st.WaitingFor[0] != "Bob" {
+		t.Errorf("waitingFor = %v, want [Bob]", st.WaitingFor)
+	}
+	// Time must not pass for the film while it is held.
+	clk.advance(2000)
+	if pos := d.Snapshot().PosMS; pos != 0 {
+		t.Errorf("a held film advanced to %d ms", pos)
+	}
+
+	d.Report(ctx, "b", "Bob", ready(gen))
+	st = d.Snapshot()
+	if st.Holding || st.Paused {
+		t.Fatalf("still held after everyone reported ready: %+v", st)
+	}
+	// Releasing re-anchors: the clients sat on that frame for three seconds,
+	// and an anchor from before the hold would claim the film had been running.
+	if st.AnchorAtMS != clk.ms {
+		t.Errorf("anchorAt = %d, want the release moment %d", st.AnchorAtMS, clk.ms)
+	}
+	if st.Gen == gen {
+		t.Error("releasing did not change gen; clients would not know to start")
+	}
+}
+
+// A report for a position the room has already left is not an answer to the
+// question being asked.
+func TestStaleGenerationReportsDoNotRelease(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	gen := d.Snapshot().Gen
+	d.Report(ctx, "a", "Alice", ready(gen))
+	pastGrace(d, clk)
+	if d.Snapshot().Holding {
+		t.Fatal("setup: the only client reported ready and the hold did not release")
+	}
+
+	// Now seek while playing: a new hold, at a new generation, and Alice's
+	// old "I am ready" must not satisfy it.
+	if _, err := d.Seek(ctx, 600_000, false); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Snapshot()
+	if !st.Holding {
+		t.Fatal("seeking while playing did not hold")
+	}
+	if st.Gen == gen {
+		t.Fatal("setup: the seek did not change gen")
+	}
+	if len(st.WaitingFor) != 1 || st.WaitingFor[0] != "Alice" {
+		t.Errorf("waitingFor = %v, want [Alice]: her report is for the old position", st.WaitingFor)
+	}
+
+	d.Report(ctx, "a", "Alice", ready(st.Gen))
+	if d.Snapshot().Holding {
+		t.Error("still held after a report for the current generation")
+	}
+}
+
+// A client on a hopeless link must not be able to stop the film for good.
+func TestHoldTimesOut(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	gen := d.Snapshot().Gen
+	// Carol keeps reporting, as a real client does every two seconds — so
+	// this is the timeout doing the work, not her going stale.
+	for elapsed := int64(0); elapsed < HoldTimeoutMS-2000; elapsed += 2000 {
+		d.Report(ctx, "slow", "Carol", notReady(gen))
+		clk.advance(2000)
+		d.Tick(ctx)
+	}
+	if !d.Snapshot().Holding {
+		t.Fatal("released before the timeout while Carol was still saying no")
+	}
+
+	d.Report(ctx, "slow", "Carol", notReady(gen))
+	clk.advance(3000)
+	d.Tick(ctx)
+	st := d.Snapshot()
+	if st.Holding {
+		t.Fatal("the hold never timed out; Carol could stop the film forever")
+	}
+	if st.Paused {
+		t.Error("timing out should start the film, not pause it")
+	}
+}
+
+// Someone who has closed their laptop is not someone to wait for.
+func TestStaleReportsAreNotWaitedFor(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	gen := d.Snapshot().Gen
+	d.Report(ctx, "gone", "Dave", notReady(gen))
+	pastGrace(d, clk)
+	if !d.Snapshot().Holding {
+		t.Fatal("setup: should be holding for Dave")
+	}
+
+	clk.advance(ReportFreshMS + 500)
+	d.Tick(ctx)
+	if d.Snapshot().Holding {
+		t.Error("still waiting on a client that stopped reporting six seconds ago")
+	}
+}
+
+// Nobody reporting at all: wait a beat for the first answers, then go rather
+// than wedge a room whose clients are all on an older build.
+func TestSilentRoomStartsAfterTheGrace(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	d.Tick(ctx)
+	if !d.Snapshot().Holding {
+		t.Fatal("released instantly; the first reports never had a chance to arrive")
+	}
+	clk.advance(holdGraceMS + 100)
+	d.Tick(ctx)
+	if d.Snapshot().Holding {
+		t.Error("a room where nothing reports stayed held forever")
+	}
+}
+
+func TestStartOverridesTheHold(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	d.Report(ctx, "slow", "Carol", notReady(d.Snapshot().Gen))
+	pastGrace(d, clk)
+	if !d.Snapshot().Holding {
+		t.Fatal("setup: should be holding")
+	}
+	if err := d.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Snapshot()
+	if st.Holding || st.Paused {
+		t.Errorf("start did not get the film going: %+v", st)
+	}
+}
+
+// Turning the setting off is also an answer to "how long are we waiting".
+func TestTurningTheSettingOffReleases(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	d.Report(ctx, "slow", "Carol", notReady(d.Snapshot().Gen))
+	pastGrace(d, clk)
+	if !d.Snapshot().Holding {
+		t.Fatal("setup: should be holding")
+	}
+	d.SetWaitForEveryone(ctx, false)
+	if d.Snapshot().Holding {
+		t.Error("still holding after waitForEveryone was turned off")
+	}
+}
+
+// Pausing and scrubbing must not put a "waiting for everyone" card over a
+// picture that was already still.
+func TestPauseAndPausedSeekDoNotHold(t *testing.T) {
+	d, _, clk := newHoldingDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	d.Report(ctx, "a", "Alice", ready(d.Snapshot().Gen))
+	pastGrace(d, clk)
+
+	if err := d.SetPaused(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if st := d.Snapshot(); st.Holding {
+		t.Error("pausing entered a hold")
+	}
+	if _, err := d.Seek(ctx, 120_000, false); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Snapshot()
+	if st.Holding {
+		t.Error("seeking while paused entered a hold; nothing was going to start")
+	}
+	if !st.Paused {
+		t.Error("seeking while paused started playing")
+	}
+
+	// Resuming does hold, and toggling out of a hold pauses rather than plays.
+	if err := d.SetPaused(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if !d.Snapshot().Holding {
+		t.Fatal("resuming did not hold")
+	}
+	paused, err := d.TogglePause(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !paused {
+		t.Error("toggling a held room should pause it, not start it")
+	}
+	if d.Snapshot().Holding {
+		t.Error("toggling to pause left the hold armed")
+	}
+}
+
+// With the setting off nothing changes, which is the default everyone gets.
+func TestNoHoldWhenTheSettingIsOff(t *testing.T) {
+	d, _ := newDirector(t)
+	ctx := context.Background()
+	if err := d.Load(ctx, "film"); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Snapshot()
+	if st.Holding || st.Paused {
+		t.Errorf("held with waitForEveryone off: %+v", st)
+	}
+}
