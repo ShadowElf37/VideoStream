@@ -65,6 +65,7 @@ type opts struct {
 	// render node the vaapi path opens.
 	encoder  string
 	vaapiDev string
+	vaapiQP  int
 }
 
 func main() {
@@ -85,6 +86,7 @@ func main() {
 	flag.StringVar(&o.ffprobe, "ffprobe", "ffprobe", "ffprobe binary")
 	flag.StringVar(&o.encoder, "encoder", "auto", "H.264 encoder: auto (VideoToolbox on macOS, libx264 elsewhere), videotoolbox, vaapi, libx264")
 	flag.StringVar(&o.vaapiDev, "vaapi-device", "/dev/dri/renderD128", "DRM render node for --encoder vaapi")
+	flag.IntVar(&o.vaapiQP, "vaapi-qp", 23, "constant-quality level for --encoder vaapi (lower is better; 20-26 is the useful range; -bitrate does not apply)")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
@@ -291,6 +293,17 @@ func upload(ctx context.Context, log *slog.Logger, path, dest string) error {
 	return cmd.Run()
 }
 
+// actualKbps is a finished file's average bitrate. It is what the HLS
+// BANDWIDTH attribute has to carry: with a quality-targeted encode the
+// nominal target overstates it, and hls.js would step a viewer down a level
+// for a link that could carry the real thing.
+func actualKbps(sizeBytes, durationMS int64) int {
+	if durationMS <= 0 {
+		return 0
+	}
+	return int(sizeBytes * 8 / durationMS)
+}
+
 // sanitize keeps generated file names free of separators and spaces so they
 // are painless to scp and to type on the server.
 func sanitize(s string) string {
@@ -343,7 +356,7 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 	// and what tells the client this title is fragmented at all.
 	renditions := []proto.Rendition{{
 		Name: proto.RenditionName(probe.Height), File: proto.MovieFileName,
-		Width: probe.Width, Height: probe.Height, Kbps: o.kbps, SizeBytes: st.Size(),
+		Width: probe.Width, Height: probe.Height, Kbps: actualKbps(st.Size(), probe.DurationMS), SizeBytes: st.Size(),
 	}}
 	extra, err := parseRenditions(o.rends, probe.Height)
 	if err != nil {
@@ -365,7 +378,7 @@ func buildMP4(ctx context.Context, log *slog.Logger, o opts, src, id string, fps
 		}
 		renditions = append(renditions, proto.Rendition{
 			Name: spec.name, File: filepath.Base(out),
-			Width: rp.Width, Height: rp.Height, Kbps: spec.kbps, SizeBytes: rst.Size(),
+			Width: rp.Width, Height: rp.Height, Kbps: actualKbps(rst.Size(), rp.DurationMS), SizeBytes: rst.Size(),
 		})
 		log.Info("rendition done", "name", spec.name,
 			"size", fmt.Sprintf("%.1f MiB", float64(rst.Size())/(1<<20)),
@@ -506,11 +519,14 @@ func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string,
 		args = append(args, "-bf", "2", "-crf", "20", "-preset", "medium",
 			"-maxrate", fmt.Sprintf("%dk", kbps), "-bufsize", fmt.Sprintf("%dk", kbps*2))
 	case "h264_vaapi":
-		// B-frames are left to the driver: Mesa's AMD encoder has none and
-		// refuses rather than ignores a request for them.
-		args = append(args, "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps),
-			"-maxrate", fmt.Sprintf("%dk", kbps*3/2),
-			"-bufsize", fmt.Sprintf("%dk", kbps*2))
+		// Constant quality, like x264's CRF, rather than a flat bitrate.
+		// Measured on a minute of 1080p anime (RX 9070): VBR at 5000 kbps
+		// spent 4.6 Mbps; CQP 22/24/26 landed at 3.2/2.4/1.9 Mbps, against
+		// x264 CRF 20's 2.2 on the same series. The bits VBR added went to
+		// still frames that did not need them, and the upload is the slow
+		// part of a push. B-frames are left to the driver: Mesa's AMD
+		// encoder has none and refuses rather than ignores a request.
+		args = append(args, "-rc_mode", "CQP", "-qp", strconv.Itoa(o.vaapiQP))
 	default:
 		args = append(args, "-bf", "2", "-b:v", fmt.Sprintf("%dk", kbps),
 			"-maxrate", fmt.Sprintf("%dk", kbps*3/2),
