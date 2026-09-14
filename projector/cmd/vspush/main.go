@@ -61,6 +61,10 @@ type opts struct {
 	dest    string
 	ffmpeg  string
 	ffprobe string
+	// encoder is auto, videotoolbox, vaapi or libx264; vaapiDev is the DRM
+	// render node the vaapi path opens.
+	encoder  string
+	vaapiDev string
 }
 
 func main() {
@@ -79,6 +83,8 @@ func main() {
 	flag.StringVar(&o.dest, "dest", "", "scp destination for the finished title, e.g. user@host:/srv/media")
 	flag.StringVar(&o.ffmpeg, "ffmpeg", "ffmpeg", "ffmpeg binary")
 	flag.StringVar(&o.ffprobe, "ffprobe", "ffprobe", "ffprobe binary")
+	flag.StringVar(&o.encoder, "encoder", "auto", "H.264 encoder: auto (VideoToolbox on macOS, libx264 elsewhere), videotoolbox, vaapi, libx264")
+	flag.StringVar(&o.vaapiDev, "vaapi-device", "/dev/dri/renderD128", "DRM render node for --encoder vaapi")
 	flag.Parse()
 
 	if flag.NArg() != 1 {
@@ -192,14 +198,26 @@ func parseRenditions(list string, primaryHeight int) ([]renditionSpec, error) {
 // Mbps is close enough to x264 that the CPU cost is not worth paying, and a
 // push that takes three minutes instead of twenty is the difference between
 // doing it before a party and not bothering.
-func videoEncoder() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "h264_videotoolbox"
+func videoEncoder(o opts) (string, error) {
+	switch o.encoder {
+	case "", "auto":
+		switch runtime.GOOS {
+		case "darwin":
+			return "h264_videotoolbox", nil
+		default:
+			// Left deliberately conservative: NVENC/VAAPI need a working
+			// device and fail late and confusingly when they are missing.
+			// --encoder vaapi is the opt-in for a Linux box with a GPU.
+			return "libx264", nil
+		}
+	case "videotoolbox":
+		return "h264_videotoolbox", nil
+	case "vaapi":
+		return "h264_vaapi", nil
+	case "libx264":
+		return "libx264", nil
 	default:
-		// Left deliberately conservative: NVENC/VAAPI need a working device
-		// and fail late and confusingly when they are missing.
-		return "libx264"
+		return "", fmt.Errorf("unknown --encoder %q (auto, videotoolbox, vaapi, libx264)", o.encoder)
 	}
 }
 
@@ -455,30 +473,46 @@ func transcodeMP4(ctx context.Context, log *slog.Logger, o opts, in, out string,
 		audioIdx = o.aid - 1
 	}
 
-	args := []string{
-		"-nostdin", "-y", "-v", "error", "-stats",
+	enc, err := videoEncoder(o)
+	if err != nil {
+		return err
+	}
+	args := []string{"-nostdin", "-y", "-v", "error", "-stats"}
+	if enc == "h264_vaapi" {
+		// Decode and burn subtitles in software (libass wants system
+		// frames), then upload to the GPU for the encode only. The device
+		// has to be opened before the input is.
+		args = append(args, "-vaapi_device", o.vaapiDev)
+		filters = append(filters, "format=nv12", "hwupload")
+	}
+	args = append(args,
 		"-i", filepath.Base(linked),
 		"-map", "0:v:0",
 		"-map", fmt.Sprintf("0:a:%d", audioIdx),
-	}
+	)
 	if len(filters) > 0 {
 		args = append(args, "-vf", strings.Join(filters, ","))
 	}
-	enc := videoEncoder()
 	args = append(args,
 		"-c:v", enc,
 		"-profile:v", "high",
 		"-g", strconv.Itoa(gopFrames),
-		"-bf", "2",
 	)
-	if enc == "libx264" {
+	switch enc {
+	case "libx264":
 		// Quality-targeted where the encoder supports it: CRF spends bits
 		// where they are needed instead of holding a flat bitrate through
 		// scenes that do not need it. VideoToolbox has no CRF equivalent.
-		args = append(args, "-crf", "20", "-preset", "medium",
+		args = append(args, "-bf", "2", "-crf", "20", "-preset", "medium",
 			"-maxrate", fmt.Sprintf("%dk", kbps), "-bufsize", fmt.Sprintf("%dk", kbps*2))
-	} else {
-		args = append(args, "-b:v", fmt.Sprintf("%dk", kbps),
+	case "h264_vaapi":
+		// B-frames are left to the driver: Mesa's AMD encoder has none and
+		// refuses rather than ignores a request for them.
+		args = append(args, "-rc_mode", "VBR", "-b:v", fmt.Sprintf("%dk", kbps),
+			"-maxrate", fmt.Sprintf("%dk", kbps*3/2),
+			"-bufsize", fmt.Sprintf("%dk", kbps*2))
+	default:
+		args = append(args, "-bf", "2", "-b:v", fmt.Sprintf("%dk", kbps),
 			"-maxrate", fmt.Sprintf("%dk", kbps*3/2),
 			"-bufsize", fmt.Sprintf("%dk", kbps*2))
 	}
