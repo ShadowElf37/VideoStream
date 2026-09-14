@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type Theme = 'dark' | 'light';
-export type QualityPref = 'auto' | 'high' | 'low';
 export type DuckDb = 0 | -6 | -12;
 export type SidebarTab = 'chat' | 'people' | 'queue';
 
@@ -18,7 +17,6 @@ export interface Prefs {
   ptt: boolean;
   duckDb: DuckDb;
   smoothnessSec: number;
-  qualityPref: QualityPref;
   statsOverlay: boolean;
   theme: Theme;
   notificationSounds: boolean;
@@ -52,7 +50,6 @@ export const DEFAULT_PREFS: Prefs = {
   // pause command directly instead, so a deep buffer costs nothing in
   // responsiveness.
   smoothnessSec: 1.5,
-  qualityPref: 'auto',
   statsOverlay: false,
   theme: 'dark',
   notificationSounds: true,

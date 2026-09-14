@@ -13,7 +13,7 @@ import { HostedMovie } from '@/movie/HostedMovie';
 import { usePlayback } from '@/movie/usePlayback';
 import { useTransport } from '@/movie/useTransport';
 import { useAutoHide } from './hooks';
-import { useMovieTracks, useQualityPreference, useSmoothness } from './useMovieTracks';
+import { useMovieTracks, useSmoothness } from './useMovieTracks';
 
 export function Stage({
   onOpenQueue,
@@ -32,7 +32,6 @@ export function Stage({
   const projectorOnline = useMpvStore((s) => s.projectorOnline);
   const movie = useMovieTracks();
   useSmoothness(room, movie);
-  useQualityPreference(movie);
 
   // Two ways a film can reach this room, and they are mutually exclusive.
   //

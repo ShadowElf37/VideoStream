@@ -1,5 +1,5 @@
 import { useTracks } from '@livekit/components-react';
-import { RemoteAudioTrack, RemoteTrackPublication, RemoteVideoTrack, Room, RoomEvent, Track, VideoQuality } from 'livekit-client';
+import { RemoteAudioTrack, RemoteTrackPublication, RemoteVideoTrack, Room, RoomEvent, Track } from 'livekit-client';
 import { useEffect, useMemo } from 'react';
 import { supportsJitterBufferTarget } from '@/lib/platform';
 import { usePrefs } from '@/state/prefs';
@@ -85,18 +85,4 @@ export function useSmoothness(room: Room | null, movie: MovieTracks) {
       room?.off(RoomEvent.Reconnected, apply);
     };
   }, [room, movie.video, movie.audio, seconds]);
-}
-
-/** Quality preference → simulcast layer selection on the movie video publication. */
-export function useQualityPreference(movie: MovieTracks) {
-  const pref = usePrefs((s) => s.qualityPref);
-  useEffect(() => {
-    const pub = movie.videoPub;
-    if (!pub) return;
-    try {
-      pub.setVideoQuality(pref === 'low' ? VideoQuality.LOW : VideoQuality.HIGH);
-    } catch (e) {
-      console.warn('setVideoQuality failed', e);
-    }
-  }, [movie.videoPub, pref]);
 }

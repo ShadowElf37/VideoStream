@@ -8,7 +8,7 @@ import { useAudio } from '@/audio/useAudioModel';
 import { api } from '@/lib/api';
 import { isSafari, supportsJitterBufferTarget, supportsSinkId } from '@/lib/platform';
 import type { QualityPreset, RoomSettings } from '@/proto/messages';
-import { applyTheme, usePrefs, type DuckDb, type QualityPref, type Theme } from '@/state/prefs';
+import { applyTheme, usePrefs, type DuckDb, type Theme } from '@/state/prefs';
 import { useSession } from '@/state/session';
 import { Button } from '@/ui/Button';
 import { Dialog } from '@/ui/Dialog';
@@ -155,7 +155,7 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
           {supportsJitterBufferTarget ? (
             <Field
               label={`Smoothness · ${prefs.smoothnessSec.toFixed(1)} s buffer`}
-              hint="How far behind the projector your picture runs. Higher rides out shaky Wi-Fi; lower makes pause and seek feel immediate, because what you see is closer to live. Applies to video and audio together."
+              hint="Desktop-projector streams only — a film hosted on the server buffers in your browser instead. How far behind the projector your picture runs: higher rides out shaky Wi-Fi, lower makes pause and seek feel immediate. Applies to video and audio together."
             >
               <Slider label="Smoothness" min={0.2} max={2.5} step={0.1} value={prefs.smoothnessSec} onChange={(v) => prefs.set('smoothnessSec', +v.toFixed(1))} ticks={[1.5]} accent />
             </Field>
@@ -164,13 +164,6 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
               {isSafari ? 'Safari' : 'This browser'} can't set a playback buffer target, so it runs on default buffers. Chrome or Firefox give the smoothest playback.
             </p>
           )}
-          <Field label="Quality preference" hint="Only matters when the projector publishes more than one layer.">
-            <Select value={prefs.qualityPref} onChange={(e) => prefs.set('qualityPref', e.target.value as QualityPref)}>
-              <option value="auto">Auto</option>
-              <option value="high">Highest available</option>
-              <option value="low">Lowest (save bandwidth)</option>
-            </Select>
-          </Field>
           <Switch label="Stats overlay" hint="Bitrate, fps, jitter, loss and the projector's encoder state." checked={prefs.statsOverlay} onCheckedChange={(v) => prefs.set('statsOverlay', v)} />
         </Section>
 
@@ -195,7 +188,7 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
           <Section title="Room (host)" hint="Applies to everyone.">
             <Switch label="Anyone can pause" hint="Otherwise viewers can only ask." checked={settings.anyoneCanPause} onCheckedChange={(v) => void patchRoom({ anyoneCanPause: v })} />
             <Switch label="Default: deafen implies mute" hint="Suggested default for new joiners; everyone can override." checked={settings.deafenImpliesMute} onCheckedChange={(v) => void patchRoom({ deafenImpliesMute: v })} />
-            <Field label="Maximum quality preset">
+            <Field label="Maximum quality preset" hint="Caps the encoder preset a host can pick when streaming from their own machine. Films pushed to the server are already encoded.">
               <Select value={settings.maxPreset} onChange={(e) => void patchRoom({ maxPreset: e.target.value as QualityPreset })}>
                 {PRESETS.map((p) => (
                   <option key={p} value={p}>
