@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { Topics, type PlaybackState } from '@/proto/messages';
 import { useSession } from '@/state/session';
 import { addSample, bestOffset, clientNowMs, offsetOf, settle, type ClockSample } from './clock';
+import { usePlaybackStore } from './store';
 
 /**
  * The room's playback state, and this client's offset from the director's
@@ -131,6 +132,12 @@ export function usePlayback(room: Room | null, roomId: string, connected: boolea
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [connected]);
+
+  // Publish for everything that is not on this component's branch of the tree:
+  // the transport bar, the seek bar, the keyboard handler.
+  useEffect(() => {
+    usePlaybackStore.getState().set(state, offsetMs);
+  }, [state, offsetMs]);
 
   return { state, offsetMs, ready: state !== null && offsetMs !== null };
 }

@@ -175,7 +175,7 @@ export function Stage({
       <SpeakingChips />
       <ReactionsLayer />
 
-      {isHost ? <HostBar visible={bar.visible} onPin={bar.pin} onOpenQueue={onOpenQueue} /> : <ViewerBar visible={bar.visible} />}
+      {isHost ? <HostBar visible={bar.visible} onPin={bar.pin} onOpenQueue={onOpenQueue} videoRef={videoRef} /> : <ViewerBar visible={bar.visible} videoRef={videoRef} />}
     </div>
   );
 }

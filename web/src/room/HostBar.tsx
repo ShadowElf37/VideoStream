@@ -13,7 +13,10 @@ import {
   Volume2,
 } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { useMpv, useMpvStore, useSmoothTimePos } from '@/host/useMpv';
+import { useMpv, useMpvStore } from '@/host/useMpv';
+import { useNowPlaying } from '@/movie/store';
+import { useTransport } from '@/movie/useTransport';
+import { useBufferedRanges } from '@/movie/useBufferedRanges';
 import { cn } from '@/lib/cn';
 import { formatDelay, formatTime, trackLabel } from '@/lib/format';
 import type { QualityPreset } from '@/proto/messages';
@@ -40,13 +43,30 @@ export function allowedPresets(max: QualityPreset | undefined): QualityPreset[] 
 }
 
 /** Host-only transport bar. Parent controls visibility; `onPin` keeps it open while a menu is up. */
-export function HostBar({ visible, onPin, onOpenQueue }: { visible: boolean; onPin: (v: boolean) => void; onOpenQueue: () => void }) {
+export function HostBar({
+  visible,
+  onPin,
+  onOpenQueue,
+  videoRef,
+}: {
+  visible: boolean;
+  onPin: (v: boolean) => void;
+  onOpenQueue: () => void;
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+}) {
   const mpv = useMpv();
   const state = useMpvStore((s) => s.state);
-  const online = useMpvStore((s) => s.projectorOnline);
   const settings = useSession((s) => s.settings);
-  const pos = useSmoothTimePos();
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Whichever player owns the room answers for position, duration and pause;
+  // the transport routes commands to the same one. Reading mpv unconditionally
+  // was how this bar came up greyed out at 0:00 over a film that was playing
+  // perfectly — there is no mpv in server-hosted mode.
+  const now = useNowPlaying();
+  const transport = useTransport(now.hosted);
+  // Only hosted media has an addressable buffer to draw.
+  const buffered = useBufferedRanges(videoRef, now.hosted);
 
   const send = async (cmd: unknown[], label?: string) => {
     if (label) setBusy(label);
@@ -56,15 +76,21 @@ export function HostBar({ visible, onPin, onOpenQueue }: { visible: boolean; onP
     return r;
   };
 
-  const duration = state?.duration ?? 0;
-  const paused = state?.pause ?? true;
-  const idle = state?.idle ?? true;
+  const pos = now.position;
+  const duration = now.duration;
+  const paused = now.paused;
+  const idle = now.idle;
   const subs = state?.tracks.filter((t) => t.type === 'sub') ?? [];
   const audios = state?.tracks.filter((t) => t.type === 'audio') ?? [];
   const activeSub = subs.find((t) => t.selected);
   const activeAudio = audios.find((t) => t.selected);
   const presets = allowedPresets(settings?.maxPreset);
-  const disabled = !online;
+  const disabled = !now.controllable;
+  // A pushed file has one audio track, burned-in subtitles and one bitrate:
+  // the tracks were chosen and the quality fixed when it was encoded. These
+  // controls exist only for the live projector, where mpv can still change
+  // them mid-playback.
+  const live = !now.hosted;
 
   return (
     <div
@@ -75,18 +101,18 @@ export function HostBar({ visible, onPin, onOpenQueue }: { visible: boolean; onP
       onPointerDown={(e) => e.stopPropagation()}
     >
       <div className="max-w-[1400px] mx-auto">
-        <SeekBar position={pos} duration={duration} chapters={state?.chapters ?? []} onSeek={(s) => void send(['seek', s, 'absolute'])} />
+        <SeekBar position={pos} duration={duration} chapters={state?.chapters ?? []} onSeek={(s) => void transport.seek(s * 1000, false)} buffered={buffered} />
         {/* One scrollable row on phones; wraps into two rows from tablet width up. */}
         <div className="mt-1 flex items-center gap-1 flex-nowrap overflow-x-auto [&>*]:shrink-0 sm:flex-wrap sm:overflow-visible sm:[&>*]:shrink">
-          <IconButton label={paused ? 'Play' : 'Pause'} kbd="Space" size="md" disabled={disabled || idle} onClick={() => void send(['cycle', 'pause'])}>
+          <IconButton label={paused ? 'Play' : 'Pause'} kbd="Space" size="md" disabled={disabled || idle} onClick={() => void transport.togglePause()}>
             {paused ? <Play /> : <Pause />}
           </IconButton>
-          <IconButton label="Back 60 s" kbd="↓" size="sm" disabled={disabled || idle} onClick={() => void send(['seek', -60, 'relative'])}>
+          <IconButton label="Back 60 s" kbd="↓" size="sm" disabled={disabled || idle} onClick={() => void transport.seek(-60_000, true)}>
             <Rewind />
           </IconButton>
-          <SeekChip label="−10" onClick={() => void send(['seek', -10, 'relative'])} disabled={disabled || idle} />
-          <SeekChip label="+10" onClick={() => void send(['seek', 10, 'relative'])} disabled={disabled || idle} />
-          <IconButton label="Forward 60 s" kbd="↑" size="sm" disabled={disabled || idle} onClick={() => void send(['seek', 60, 'relative'])}>
+          <SeekChip label="−10" onClick={() => void transport.seek(-10_000, true)} disabled={disabled || idle} />
+          <SeekChip label="+10" onClick={() => void transport.seek(10_000, true)} disabled={disabled || idle} />
+          <IconButton label="Forward 60 s" kbd="↑" size="sm" disabled={disabled || idle} onClick={() => void transport.seek(60_000, true)}>
             <FastForward />
           </IconButton>
 
@@ -110,6 +136,11 @@ export function HostBar({ visible, onPin, onOpenQueue }: { visible: boolean; onP
 
           <span className="flex-1" />
 
+          {/* Speed, audio, subtitles, mpv volume and the encoder preset are all
+              live-projector controls: they change what mpv is doing right now.
+              A pushed file has none of those knobs left. */}
+          {live && (
+            <>
           {/* Speed */}
           <Menu
             onOpenChange={onPin}
@@ -226,6 +257,8 @@ export function HostBar({ visible, onPin, onOpenQueue }: { visible: boolean; onP
               </>
             )}
           </Menu>
+            </>
+          )}
 
           <Button size="sm" variant="primary" onClick={onOpenQueue} className="ml-1">
             <FolderOpen className="size-4" /> Open…
