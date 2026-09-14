@@ -57,6 +57,10 @@ type Publisher struct {
 	vseq      uint16
 	aseq      uint16
 
+	// keyReq is called when a subscriber asks for a picture. An encoder that
+	// can honour it turns a late joiner's two-second wait into one frame.
+	keyReq atomic.Pointer[func()]
+
 	pli   atomic.Int64
 	fir   atomic.Int64
 	nack  atomic.Int64
@@ -159,14 +163,26 @@ func (p *Publisher) Republish() error {
 	return p.publishLocked(w, h)
 }
 
+// SetKeyframeRequest installs what to do about a PLI or FIR. Until this is
+// called they are only counted, which is all the ffmpeg path can do with them.
+func (p *Publisher) SetKeyframeRequest(fn func()) { p.keyReq.Store(&fn) }
+
 func (p *Publisher) onRTCP(pkt rtcp.Packet) {
 	switch pkt.(type) {
 	case *rtcp.PictureLossIndication:
 		p.pli.Add(1)
+		p.requestKeyframe()
 	case *rtcp.FullIntraRequest:
 		p.fir.Add(1)
+		p.requestKeyframe()
 	case *rtcp.TransportLayerNack:
 		p.nack.Add(1)
+	}
+}
+
+func (p *Publisher) requestKeyframe() {
+	if fn := p.keyReq.Load(); fn != nil {
+		(*fn)()
 	}
 }
 

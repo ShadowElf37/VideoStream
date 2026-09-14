@@ -65,6 +65,11 @@ joins with the same password:
 VS_PASSWORD=dev ./projector/bin/projector --room http://localhost:8080 --media-root ~/Videos ~/Videos/episode.mkv
 ```
 
+On macOS, `--encoder vt` replaces the ffmpeg child with an in-process
+VideoToolbox session. It is the only path that can produce a keyframe on
+demand, so a late joiner's PLI gets them a picture in about 30 ms instead of
+waiting out the 2 s GOP, and it drops about 150 ms of pipeline latency.
+
 The projector renders mpv on the CPU by default. `--render gl` moves that to
 an offscreen OpenGL framebuffer read back through pixel buffer objects, which
 roughly halves the projector's own CPU at 1080p (39% of one core → 21% on an

@@ -58,7 +58,7 @@ func main() {
 	presetName := flag.String("preset", proto.Preset1080p, "quality preset: 1080p-high|1080p|720p|540p")
 	maxPreset := flag.String("max-preset", proto.Preset1080pHigh, "highest preset the host may select")
 	fpsFlag := flag.Float64("fps", 0, "output frame rate; 0 = follow the source")
-	encName := flag.String("encoder", "", "force an ffmpeg H.264 encoder instead of probing")
+	encName := flag.String("encoder", "", "force an H.264 encoder instead of probing: an ffmpeg encoder name, or \"vt\" for the in-process VideoToolbox session (macOS), which can produce a keyframe on demand when a late joiner sends a PLI")
 	ffmpegPath := flag.String("ffmpeg", "ffmpeg", "path to the ffmpeg binary")
 	mpvConfigDir := flag.String("mpv-config-dir", defaultMpvConfigDir(), "mpv config dir (mpv.conf, fonts, scripts)")
 	ipcSocket := flag.String("ipc-socket", defaultIPCSocket(), "mpv JSON IPC socket path")
@@ -184,9 +184,18 @@ func run(log *slog.Logger, o runOpts) error {
 		return errors.New("need --room (plus --password or $VS_PASSWORD), or both --url and --token")
 	}
 
-	cand, err := encoder.Probe(ctx, log, o.ffmpeg, o.encoder)
-	if err != nil {
-		return err
+	// The in-process encoder is selected by name and needs no probing: it is
+	// the platform's own framework, not a child process that may or may not
+	// have been built with the codec.
+	var cand encoder.Candidate
+	inProcess := o.encoder == encoder.VTName
+	if inProcess {
+		cand = encoder.Candidate{Name: "videotoolbox-inproc"}
+	} else {
+		cand, err = encoder.Probe(ctx, log, o.ffmpeg, o.encoder)
+		if err != nil {
+			return err
+		}
 	}
 
 	// mpv writes PCM into this FIFO; the timeline drains it.
@@ -235,15 +244,16 @@ func run(log *slog.Logger, o runOpts) error {
 	}
 
 	p := &projector{
-		log:     log,
-		opts:    o,
-		host:    host,
-		tl:      tl,
-		cand:    cand,
-		preset:  preset,
-		fpsNum:  24000,
-		fpsDen:  1001,
-		started: epoch,
+		log:       log,
+		opts:      o,
+		inProcess: inProcess,
+		host:      host,
+		tl:        tl,
+		cand:      cand,
+		preset:    preset,
+		fpsNum:    24000,
+		fpsDen:    1001,
+		started:   epoch,
 	}
 	if o.fps > 0 {
 		p.fpsNum, p.fpsDen = timeline.StableRate(o.fps)
@@ -311,6 +321,13 @@ func run(log *slog.Logger, o runOpts) error {
 			(*v).Submit(f.Buf, f.Wall)
 		}
 	})
+	// A PLI or FIR means somebody has no picture. With an encoder that can
+	// honour it they get one in a frame time instead of at the next GOP.
+	pub.SetKeyframeRequest(func() {
+		if v := p.video.Load(); v != nil {
+			(*v).ForceKeyframe()
+		}
+	})
 
 	go p.ctl.Run(ctx)
 	go p.watchFPS(ctx)
@@ -354,8 +371,10 @@ type projector struct {
 	pub  *publish.Publisher
 	ctl  *control.Controller
 
-	cand    encoder.Candidate
-	started time.Time
+	cand encoder.Candidate
+	// inProcess selects the VideoToolbox session over the ffmpeg child.
+	inProcess bool
+	started   time.Time
 
 	mu        sync.Mutex
 	preset    encoder.Preset
@@ -363,7 +382,7 @@ type projector struct {
 	fpsDen    int
 	fpsPinned bool
 
-	video atomic.Pointer[*encoder.Video]
+	video atomic.Pointer[encoder.Encoder]
 }
 
 // rebuildEncoder tears the ffmpeg child down and starts a fresh one for the
@@ -375,7 +394,7 @@ func (p *projector) rebuildEncoder(ctx context.Context) error {
 	p.mu.Unlock()
 
 	p.host.SetOutput(preset.Width, preset.Height)
-	v, err := encoder.NewVideo(ctx, p.log, encoder.VideoConfig{
+	cfg := encoder.VideoConfig{
 		FFmpeg:    p.opts.ffmpeg,
 		Candidate: p.cand,
 		Preset:    preset,
@@ -387,7 +406,14 @@ func (p *projector) rebuildEncoder(ctx context.Context) error {
 				p.log.Warn("video write failed", "err", err)
 			}
 		},
-	})
+	}
+	var v encoder.Encoder
+	var err error
+	if p.inProcess {
+		v, err = encoder.NewVideoToolbox(ctx, p.log, cfg)
+	} else {
+		v, err = encoder.NewVideo(ctx, p.log, cfg)
+	}
 	if err != nil {
 		return err
 	}
