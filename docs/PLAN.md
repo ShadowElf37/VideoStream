@@ -248,7 +248,29 @@ over a feature; `anyoneCanPause` was enforced nowhere that could act on it;
 chapter titles arrive cp1252-mangled from some releases and are repaired at
 push time.
 
-**Not yet done.** A second (720p) rendition — HTTP delivery has no simulcast,
-so a viewer who cannot sustain the bitrate stalls where WebRTC would have gone
-blurry. Intent echo for seeks (a viewer sees the result, not the instant
-acknowledgement). Per-viewer sync telemetry in the People tab.
+## Where the backlog lives (2026-09-13)
+
+This document is a record of how the design got here, not a to-do list. An
+audit of the phases above against the code turned up nineteen items that were
+planned and never built, or built and never wired up; they are now GitHub
+issues, and that is where work is tracked from here.
+
+The audit's one real finding was a control that could not work: the viewer
+"quality preference" selected a simulcast layer that Phase 3 never published,
+so it had done nothing for its entire life. It is deleted. Two neighbouring
+settings — smoothness and the maximum quality preset — are live-projector-only
+and now say so.
+
+The three worth knowing about without opening the tracker:
+
+- **#1, the drift readout.** `HostedMovie` computes this client's error,
+  buffer depth and rate every 250 ms and `Stage` keeps only `buffering`. This
+  file said the readout had to exist *before* the control loop was written.
+  It doesn't, and #19 — sync has never been tested with two viewers, which
+  was the entire point of the reorientation — is hard to judge without it.
+- **#2, intent echo for seeks.** Pause is loud; seeks are silent. A viewer
+  sees the result, never the acknowledgement.
+- **#3, a 720p rendition.** HTTP delivery has no simulcast, so a viewer who
+  cannot sustain the bitrate stalls where WebRTC would have gone blurry. This
+  is what restores a real quality choice, and it wants deciding alongside #15
+  (HLS), which is what would let a rendition change mid-film.
