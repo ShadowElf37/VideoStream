@@ -1,47 +1,27 @@
 import { Hand } from 'lucide-react';
-import { useRoomContext } from '@livekit/components-react';
-import { useState } from 'react';
 import { useMpvStore } from '@/host/useMpv';
 import { useNowPlaying } from '@/movie/store';
-import { useTransport } from '@/movie/useTransport';
 import { useBufferedRanges } from '@/movie/useBufferedRanges';
 import { useRoomLag } from '@/movie/useRoomLag';
 import { cn } from '@/lib/cn';
-import { publish } from '@/lib/data';
 import { formatTime } from '@/lib/format';
-import { Topics } from '@/proto/messages';
 import { useSession } from '@/state/session';
 import { HostedQuality } from './HostBar';
 import { SeekBar } from './SeekBar';
+import { useRequestPause } from './useRequestPause';
 
 /** Read-only progress for viewers plus "Request pause". */
 export function ViewerBar({ visible, videoRef }: { visible: boolean; videoRef: React.RefObject<HTMLVideoElement | null> }) {
-  const room = useRoomContext();
   const settings = useSession((s) => s.settings);
-  const [cooldown, setCooldown] = useState(false);
+  const { request: requestPause, cooldown } = useRequestPause();
 
   // Whichever player owns the room; reading mpv alone showed 0:00 over a
   // perfectly good server-hosted film.
   const liveState = useMpvStore((s) => s.state);
   const now = useNowPlaying();
-  const transport = useTransport(now.hosted);
   const buffered = useBufferedRanges(videoRef, now.hosted);
   const lag = useRoomLag(now.hosted);
   const pos = now.position;
-
-  const requestPause = async () => {
-    if (cooldown) return;
-    setCooldown(true);
-    setTimeout(() => setCooldown(false), 4000);
-    if (settings?.anyoneCanPause) {
-      // We can pause directly, so the paused stage is the indicator — asking
-      // the room to pause as well would just be noise.
-      await transport.togglePause();
-      return;
-    }
-    await publish(room, Topics.react, { emoji: '⏸️' }, { reliable: false });
-    useSession.getState().requestPause('You');
-  };
 
   if (now.idle) return null;
 

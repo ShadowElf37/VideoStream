@@ -1,6 +1,6 @@
 import { useRoomContext } from '@livekit/components-react';
 import { useCallback, useRef, useState } from 'react';
-import { useMpv, useMpvStore } from '@/host/useMpv';
+import { useMpvStore } from '@/host/useMpv';
 import { cn } from '@/lib/cn';
 import { usePrefs } from '@/state/prefs';
 import { useSession } from '@/state/session';
@@ -26,7 +26,6 @@ export function Stage({
   videoRef: React.RefObject<HTMLVideoElement | null>;
 }) {
   const room = useRoomContext();
-  const mpv = useMpv();
   const role = useSession((s) => s.role);
   const statsOverlay = usePrefs((s) => s.statsOverlay);
   const projectorMode = usePrefs((s) => s.projectorMode);
@@ -68,79 +67,6 @@ export function Stage({
   const bar = useAutoHide(1600, hasMovie, stageRef);
   const isHost = role === 'host';
 
-  // mpv-style keys while the stage has focus (host only).
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!isHost || e.metaKey || e.ctrlKey || e.altKey) return;
-    const send = (cmd: unknown[]) => void mpv.send(cmd);
-    const speed = state?.speed ?? 1;
-    // In hosted mode the transport keys go to the director; the rest (track
-    // switching, subtitle delay) are mpv-only and simply do nothing, which is
-    // honest — a burned-in subtitle has no delay to adjust.
-    if (hosted) {
-      switch (e.key) {
-        case ' ':
-          e.preventDefault();
-          void transport.togglePause();
-          return;
-        case 'ArrowLeft':
-          e.preventDefault();
-          void transport.seek(-5000, true);
-          return;
-        case 'ArrowRight':
-          e.preventDefault();
-          void transport.seek(5000, true);
-          return;
-        case 'ArrowUp':
-          e.preventDefault();
-          void transport.seek(60_000, true);
-          return;
-        case 'ArrowDown':
-          e.preventDefault();
-          void transport.seek(-60_000, true);
-          return;
-      }
-    }
-    switch (e.key) {
-      case ' ':
-        send(['cycle', 'pause']);
-        break;
-      case 'ArrowLeft':
-        send(['seek', -5, 'relative']);
-        break;
-      case 'ArrowRight':
-        send(['seek', 5, 'relative']);
-        break;
-      case 'ArrowUp':
-        send(['seek', 60, 'relative']);
-        break;
-      case 'ArrowDown':
-        send(['seek', -60, 'relative']);
-        break;
-      case '[':
-        send(['set_property', 'speed', Math.max(0.25, +(speed * 0.9).toFixed(2))]);
-        break;
-      case ']':
-        send(['set_property', 'speed', Math.min(4, +(speed * 1.1).toFixed(2))]);
-        break;
-      case 'j':
-        send(['cycle', 'sid']);
-        break;
-      case '#':
-        send(['cycle', 'aid']);
-        break;
-      case 'z':
-        send(['add', 'sub-delay', -0.1]);
-        break;
-      case 'x':
-        send(['add', 'sub-delay', 0.1]);
-        break;
-      default:
-        return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
   // Whichever player is live decides what "paused" means. In hosted mode the
   // director's word is final; in live mode it is mpv's.
   const paused = hosted
@@ -153,17 +79,10 @@ export function Stage({
   return (
     <div
       ref={stageRef}
-      tabIndex={0}
-      aria-label="Stage"
-      className={cn('relative h-full w-full bg-[#0b0b0d] outline-none overflow-hidden', !bar.visible && hasMovie && 'cursor-none')}
-      onKeyDown={onKeyDown}
+      className={cn('relative h-full w-full bg-[#0b0b0d] overflow-hidden', !bar.visible && hasMovie && 'cursor-none')}
       onDoubleClick={(e) => {
         if ((e.target as HTMLElement).closest('button, [role=slider]')) return;
         onToggleFullscreen();
-      }}
-      onClick={(e) => {
-        if ((e.target as HTMLElement).closest('button, [role=slider], a, input')) return;
-        stageRef.current?.focus({ preventScroll: true });
       }}
     >
       {hosted && playback.state && playback.offsetMs !== null ? (

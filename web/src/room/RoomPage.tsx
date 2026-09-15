@@ -1,6 +1,6 @@
 import { RoomContext } from '@livekit/components-react';
 import type { Room } from 'livekit-client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { AudioModelContext, useAudioModel } from '@/audio/useAudioModel';
 import { MpvContext, useMpvPlumbing, useMpvStore } from '@/host/useMpv';
@@ -19,11 +19,11 @@ import { DeviceCheck } from './DeviceCheck';
 import { Dock } from './Dock';
 import { InviteDialog } from './InviteDialog';
 import { JoinCard } from './JoinCard';
+import { RoomKeys } from './RoomKeys';
 import { SettingsDialog } from './SettingsDialog';
 import { Sidebar, type SidebarMode } from './Sidebar';
 import { Stage } from './Stage';
 import { useAutoHide, useFullscreen, useIsNarrow } from './hooks';
-import { useGlobalKeys } from './useKeyboard';
 import { useRoomConnection } from './useRoomConnection';
 import { useRoomEvents } from './useRoomEvents';
 
@@ -191,22 +191,9 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
     setPref('sidebarOpen', true);
   }, [setPref]);
 
-  const { dispatch } = audio;
-  const keys = useMemo(
-    () => ({
-      toggleMic: () => dispatch({ type: 'toggleMic' }),
-      toggleDeafen: () => dispatch({ type: 'toggleDeafen' }),
-      toggleMovieMuted: () => dispatch({ type: 'toggleMovieMuted' }),
-      toggleReactions: () => setReactionsOpen((o) => !o),
-      toggleFullscreen: () => void fs.toggle(),
-      toggleSidebar: () => setPref('sidebarOpen', !usePrefs.getState().sidebarOpen),
-      pttDown: () => dispatch({ type: 'pttDown' }),
-      pttUp: () => dispatch({ type: 'pttUp' }),
-      openHelp: () => setSettingsOpen(true),
-    }),
-    [dispatch, fs, setPref],
-  );
-  useGlobalKeys(keys, !settingsOpen && !inviteOpen);
+  const toggleReactions = useCallback(() => setReactionsOpen((o) => !o), []);
+  const toggleFullscreen = useCallback(() => void fs.toggle(), [fs]);
+  const openHelp = useCallback(() => setSettingsOpen(true), []);
 
   return (
     <RoomContext.Provider value={room}>
@@ -214,6 +201,7 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
         <MpvContext.Provider value={mpv}>
           <div className={cn('relative h-full flex flex-col bg-ground text-text', fs.active && 'bg-black')}>
             <AudioRenderer />
+            <RoomKeys enabled={!settingsOpen && !inviteOpen} toggleReactions={toggleReactions} toggleFullscreen={toggleFullscreen} openHelp={openHelp} />
             <Banners room={room} onReconnect={onReconnect} onLeave={onLeave} />
             <div className={cn('flex-1 min-h-0 flex', stacked && 'flex-col')}>
               <main className={cn('min-w-0 min-h-0 relative', stacked && sidebarOpen ? 'aspect-video flex-none w-full' : 'flex-1')}>

@@ -76,9 +76,10 @@ roughly halves the projector's own CPU at 1080p (39% of one core → 21% on an
 M1) at the cost of one frame of extra latency. It is the fallback for a 4K
 source or dense subtitles rather than the default.
 
-Host keys on the stage: `Space` pause, `←/→` ±5 s, `↑/↓` ±60 s; in projector
-mode also `j` cycle subtitles, `#` cycle audio, `z`/`x` sub delay. `f` is
-fullscreen.
+Keys work room-wide, whatever was clicked last; only a text field, a dialog
+or a menu takes them. `Space` is play/pause (for viewers, a pause request),
+`←/→` ±5 s, `↑/↓` ±60 s; in projector mode also `j` cycle subtitles, `#`
+cycle audio, `z`/`x` sub delay. `f` is fullscreen.
 
 ## Production
 
