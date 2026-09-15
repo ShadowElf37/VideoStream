@@ -13,9 +13,6 @@ export const supportsJitterBufferTarget =
   typeof RTCRtpReceiver !== 'undefined' &&
   ('jitterBufferTarget' in RTCRtpReceiver.prototype || 'playoutDelayHint' in RTCRtpReceiver.prototype);
 
-export const supportsPiP =
-  typeof document !== 'undefined' && 'pictureInPictureEnabled' in document && document.pictureInPictureEnabled;
-
 export const prefersReducedMotion =
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 

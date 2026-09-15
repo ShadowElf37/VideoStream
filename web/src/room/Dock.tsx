@@ -7,11 +7,9 @@ import {
   Maximize,
   Mic,
   MicOff,
-  MicVocal,
   Minimize,
   PanelRight,
   PanelRightClose,
-  PictureInPicture2,
   Settings,
   Sticker,
   UserPlus,
@@ -23,7 +21,6 @@ import { useAudio } from '@/audio/useAudioModel';
 import { MOVIE_VOLUME_MAX } from '@/audio/model';
 import { cn } from '@/lib/cn';
 import { publish } from '@/lib/data';
-import { supportsPiP } from '@/lib/platform';
 import { Topics } from '@/proto/messages';
 import { useSession } from '@/state/session';
 import { Popover } from '@/ui/Popover';
@@ -41,7 +38,6 @@ export interface DockProps {
   onOpenSettings: () => void;
   onOpenInvite: () => void;
   onLeave: () => void;
-  onPiP?: () => void;
   reactionsOpen: boolean;
   setReactionsOpen: (o: boolean) => void;
   unread: number;
@@ -156,24 +152,8 @@ export function Dock(p: DockProps) {
         ))}
       </Popover>
 
-      <DockButton
-        label={state.ptt ? 'Push-to-talk on (hold V to talk)' : 'Enable push-to-talk'}
-        kbd="V"
-        caption={state.ptt ? 'PTT on' : 'PTT'}
-        active={state.ptt}
-        tone="accent"
-        onClick={() => dispatch({ type: 'setPtt', enabled: !state.ptt })}
-      >
-        <MicVocal />
-      </DockButton>
-
       <Divider />
 
-      {supportsPiP && p.onPiP && (
-        <DockButton label="Picture in picture" caption="PiP" onClick={p.onPiP}>
-          <PictureInPicture2 />
-        </DockButton>
-      )}
       <DockButton label={p.isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} kbd="F" caption={p.isFullscreen ? 'Exit' : 'Full'} onClick={p.onToggleFullscreen}>
         {p.isFullscreen ? <Minimize /> : <Maximize />}
       </DockButton>

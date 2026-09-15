@@ -208,18 +208,6 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
   );
   useGlobalKeys(keys, !settingsOpen && !inviteOpen);
 
-  const pip = async () => {
-    const v = videoRef.current;
-    if (!v) return;
-    try {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else await v.requestPictureInPicture();
-    } catch (e) {
-      useSession.getState().toast('Picture-in-picture unavailable', 'warn');
-      console.warn(e);
-    }
-  };
-
   return (
     <RoomContext.Provider value={room}>
       <AudioModelContext.Provider value={audio}>
@@ -242,7 +230,6 @@ function RoomView({ room, connected, onLeave, onReconnect }: { room: Room; conne
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenInvite={() => setInviteOpen(true)}
               onLeave={onLeave}
-              onPiP={pip}
               reactionsOpen={reactionsOpen}
               setReactionsOpen={setReactionsOpen}
               unread={unread}
