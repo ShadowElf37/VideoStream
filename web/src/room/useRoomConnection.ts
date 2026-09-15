@@ -20,7 +20,9 @@ function roomOptions(): RoomOptions {
     adaptiveStream: false,
     dynacast: false,
     webAudioMix: { audioContext: getAudioContext() },
-    publishDefaults: { dtx: true, red: true, audioPreset: AudioPresets.speech },
+    // The mic stays open while muted by default, so unmuting is instant;
+    // releasing it is a preference, for people who want the indicator off.
+    publishDefaults: { dtx: true, red: true, audioPreset: AudioPresets.speech, stopMicTrackOnMute: p.releaseMicOnMute },
     audioCaptureDefaults: {
       deviceId: p.micDeviceId || undefined,
       echoCancellation: p.echoCancellation,

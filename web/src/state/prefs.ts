@@ -15,6 +15,9 @@ export interface Prefs {
   joinMuted: boolean;
   deafenImpliesMute: boolean;
   ptt: boolean;
+  /** Stop the capture track while muted, so the browser's mic indicator goes
+   *  off. Costs a moment on unmute, which is why it is off by default. */
+  releaseMicOnMute: boolean;
   duckDb: DuckDb;
   smoothnessSec: number;
   statsOverlay: boolean;
@@ -49,6 +52,7 @@ export const DEFAULT_PREFS: Prefs = {
   joinMuted: false,
   deafenImpliesMute: false,
   ptt: false,
+  releaseMicOnMute: false,
   duckDb: 0,
   // The receive buffer. It is deliberately large: it is what rides out shaky
   // Wi-Fi. Control latency is NOT solved by shrinking it — clients act on the

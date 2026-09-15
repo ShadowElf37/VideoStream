@@ -53,6 +53,19 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
     }
   };
 
+  const setReleaseMicOnMute = (v: boolean) => {
+    prefs.set('releaseMicOnMute', v);
+    // The room reads this when it publishes a mic; the track already
+    // published carries its own copy.
+    room.options.publishDefaults = { ...room.options.publishDefaults, stopMicTrackOnMute: v };
+    const t = micTrack();
+    if (!t) return;
+    t.stopOnMute = v;
+    // Muted when this went on: the browser is still holding the mic. Let go
+    // now; unmuting reacquires an ended track on its own.
+    if (v && t.isMuted && t.mediaStreamTrack.readyState === 'live') t.mediaStreamTrack.stop();
+  };
+
   const setMic = async (id: string) => {
     prefs.set('micDeviceId', id);
     try {
@@ -141,6 +154,12 @@ export function SettingsDialog({ open, onOpenChange, room }: { open: boolean; on
             onCheckedChange={(v) => dispatch({ type: 'setDeafenImpliesMute', value: v })}
           />
           <Switch label="Push to talk" hint="Hold V to talk." checked={state.ptt} onCheckedChange={(v) => dispatch({ type: 'setPtt', enabled: v })} />
+          <Switch
+            label="Release the mic while muted"
+            hint="Turns the browser's microphone indicator off when you mute. Unmuting then takes a moment to re-open the mic, which makes push-to-talk laggy."
+            checked={prefs.releaseMicOnMute}
+            onCheckedChange={setReleaseMicOnMute}
+          />
           <Field label="Duck the movie when someone talks" className="pt-1">
             <Select value={String(state.duckDb)} onChange={(e) => dispatch({ type: 'setDuckDb', db: Number(e.target.value) as DuckDb })}>
               <option value="0">Off</option>
