@@ -77,6 +77,35 @@ func (s *Service) PasswordAccess(password string) string {
 	return proto.AccessNone
 }
 
+// PasswordMiss describes a wrong password without revealing it, so the log
+// can say why a host at the door is being turned away: a wrong length, caps
+// lock, or characters that only look like the right ones.
+type PasswordMiss struct {
+	Length        int
+	WantLength    int
+	CaseOnly      bool
+	NonASCII      bool
+	ConfusableFix bool
+}
+
+// DescribeMiss is for logging only; call it after PasswordAccess refused.
+func (s *Service) DescribeMiss(password string) PasswordMiss {
+	got := strings.TrimSpace(password)
+	want := strings.TrimSpace(s.cfg.RoomPassword)
+	m := PasswordMiss{Length: len([]rune(got)), WantLength: len([]rune(want))}
+	m.CaseOnly = got != want && strings.EqualFold(got, want)
+	for _, r := range got {
+		if r > 127 {
+			m.NonASCII = true
+			break
+		}
+	}
+	// Dashes and digits people and keyboards swap for one another.
+	fold := strings.NewReplacer("\u2010", "-", "\u2011", "-", "\u2012", "-", "\u2013", "-", "\u2014", "-", "\u2212", "-", "O", "0", "o", "0", "I", "l", "1", "l", "|", "l")
+	m.ConfusableFix = got != want && strings.EqualFold(fold.Replace(got), fold.Replace(want))
+	return m
+}
+
 // rank orders access levels so the best of several can be picked.
 func rank(access string) int {
 	switch access {

@@ -117,6 +117,11 @@ func (s *Server) resolveAccess(w http.ResponseWriter, r *http.Request, room *sto
 			return "", false
 		}
 		if s.rooms.PasswordAccess(req.Password) != proto.AccessHost {
+			miss := s.rooms.DescribeMiss(req.Password)
+			s.logger.Warn("wrong room password",
+				"ip", clientIP(r), "ua", r.UserAgent(),
+				"len", miss.Length, "want_len", miss.WantLength,
+				"case_only", miss.CaseOnly, "non_ascii", miss.NonASCII, "lookalike_only", miss.ConfusableFix)
 			writeError(w, http.StatusForbidden, "wrong password")
 			return "", false
 		}
