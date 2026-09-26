@@ -64,8 +64,14 @@ func (s *Service) KeyAccess(room *store.Room, key string) string {
 
 // PasswordAccess is what the room password is worth: host if it matches,
 // none otherwise. Compared in constant time.
+//
+// Surrounding whitespace is ignored on both sides: a password copied out of a
+// terminal or a chat message tends to bring indentation or a newline with it,
+// and "wrong password" is a baffling answer to that.
 func (s *Service) PasswordAccess(password string) string {
-	if password != "" && subtle.ConstantTimeCompare([]byte(password), []byte(s.cfg.RoomPassword)) == 1 {
+	password = strings.TrimSpace(password)
+	want := strings.TrimSpace(s.cfg.RoomPassword)
+	if password != "" && subtle.ConstantTimeCompare([]byte(password), []byte(want)) == 1 {
 		return proto.AccessHost
 	}
 	return proto.AccessNone

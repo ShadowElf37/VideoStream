@@ -1,4 +1,4 @@
-import { ArrowRight, Crown, KeyRound, Lock, Users } from 'lucide-react';
+import { ArrowRight, Crown, Eye, EyeOff, KeyRound, Lock, Users } from 'lucide-react';
 import { useState } from 'react';
 import { colorFor } from '@/lib/colors';
 import type { Access } from '@/proto/messages';
@@ -35,12 +35,13 @@ export function JoinCard({
   const setPref = usePrefs((s) => s.set);
   const [name, setName] = useState(savedName);
   const [password, setPassword] = useState('');
+  const [reveal, setReveal] = useState(false);
   // A viewer can always claim the host seat with the password; the field is
   // tucked away so friends are not asked for a secret they do not have.
   const [claimHost, setClaimHost] = useState(false);
   const needsPassword = access === 'none';
   const showPassword = needsPassword || claimHost;
-  const valid = name.trim().length > 0 && (!needsPassword || password.length > 0);
+  const valid = name.trim().length > 0 && (!needsPassword || password.trim().length > 0);
 
   return (
     <form
@@ -49,7 +50,7 @@ export function JoinCard({
         e.preventDefault();
         if (!valid) return;
         setPref('name', name.trim());
-        onNext(name.trim(), showPassword ? password : '');
+        onNext(name.trim(), showPassword ? password.trim() : '');
       }}
     >
       {notice && <div className="rounded-xl bg-warn/10 border border-warn/30 text-warn text-[13px] px-3 py-2">{notice}</div>}
@@ -69,7 +70,25 @@ export function JoinCard({
         <Field label="Room password" hint={needsPassword ? undefined : 'Optional: enter it to take the host seat.'}>
           <div className="relative">
             <Lock className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted" />
-            <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="pl-9" autoComplete="current-password" autoFocus={!!savedName} />
+            <Input
+              type={reveal ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="pl-9 pr-10"
+              autoComplete="current-password"
+              spellCheck={false}
+              autoCapitalize="off"
+              autoFocus={!!savedName}
+            />
+            <button
+              type="button"
+              onClick={() => setReveal((r) => !r)}
+              aria-label={reveal ? 'Hide password' : 'Show password'}
+              aria-pressed={reveal}
+              className="absolute right-2 top-1/2 -translate-y-1/2 size-7 rounded-md inline-flex items-center justify-center text-muted hover:text-text hover:bg-hover"
+            >
+              {reveal ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            </button>
           </div>
         </Field>
       ) : (

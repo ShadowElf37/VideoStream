@@ -263,6 +263,19 @@ func TestPasswordAttemptsAreThrottled(t *testing.T) {
 	}
 }
 
+// A password pasted from a terminal carries its indentation and a newline.
+func TestPasswordIgnoresSurroundingWhitespace(t *testing.T) {
+	handler, _, _ := newTestServer(t)
+	rec := doJSON(t, handler, http.MethodPost, "/api/room/token", proto.TokenRequest{Name: "Host", Password: "  " + testPassword + "\n"}, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("padded password: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, handler, http.MethodPost, "/api/room/token", proto.TokenRequest{Name: "Host", Password: testPassword + "x"}, "")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("wrong password: status %d, want 403", rec.Code)
+	}
+}
+
 // Rotation is what makes a leaked link stop working, and the cookie is what
 // keeps it from punishing the people who were actually there.
 func TestRotateLinks(t *testing.T) {
